@@ -1,0 +1,6 @@
+/.idea
+/.vscode
+/target
+/build
+.zig-cache
+zig-out
