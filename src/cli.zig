@@ -40,7 +40,7 @@ pub fn run(allocator: Allocator) !u8 {
 
     {
         var dir = std.fs.cwd().openDir(scanned_path, .{}) catch |err| {
-            std.log.err("Can't open dir {s}: {any}", .{scanned_path, err});
+            std.log.err("Can't open dir {s}: {any}", .{ scanned_path, err });
             return 1;
         };
         dir.close();
