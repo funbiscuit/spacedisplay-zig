@@ -5,7 +5,7 @@ const vxfw = vaxis.vxfw;
 const Scanner = @import("../Scanner.zig");
 
 const Allocator = std.mem.Allocator;
-const AppWindow = @This();
+const FilesView = @This();
 
 _allocator: Allocator,
 _scanner: *Scanner,
@@ -16,43 +16,32 @@ _last_mouse_row: ?u32 = null,
 _last_height: ?u16 = null,
 _entries: std.ArrayList(Scanner.ListDirEntry) = .empty,
 
-const AvailableRoot = struct {
-    row: u16,
-    id: u32,
-};
-
-pub fn init(allocator: Allocator, scanned_path: []const u8) !AppWindow {
-    const scanner = try allocator.create(Scanner);
-    errdefer allocator.destroy(scanner);
-    scanner.* = try Scanner.init(allocator, scanned_path);
-
+pub fn init(allocator: Allocator, scanner: *Scanner) FilesView {
     return .{
         ._allocator = allocator,
         ._scanner = scanner,
     };
 }
 
-pub fn deinit(self: *AppWindow) void {
-    self._scanner.deinit(self._allocator);
-    self._allocator.destroy(self._scanner);
+pub fn deinit(self: *FilesView) void {
     Scanner.deinitListDir(self._allocator, &self._entries);
 }
 
-pub fn widget(self: *AppWindow) vxfw.Widget {
+pub fn widget(self: *FilesView) vxfw.Widget {
     return .{
         .userdata = self,
-        .eventHandler = AppWindow.typeErasedEventHandler,
-        .drawFn = AppWindow.typeErasedDrawFn,
+        .eventHandler = FilesView.typeErasedEventHandler,
+        .drawFn = FilesView.typeErasedDrawFn,
     };
 }
 
 fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-    const self: *AppWindow = @ptrCast(@alignCast(ptr));
+    const self: *FilesView = @ptrCast(@alignCast(ptr));
     return self.handleEvent(ctx, event);
 }
 
 fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-    const self: *AppWindow = @ptrCast(@alignCast(ptr));
+    const self: *FilesView = @ptrCast(@alignCast(ptr));
     return self.draw(ctx);
 }
 
@@ -61,7 +50,7 @@ const UpdateParams = struct {
     select_id: ?u32 = null,
 };
 
-fn updateEntries(self: *AppWindow, params: UpdateParams) !bool {
+fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
     if (self._scanner.hasChanges() or params.force) {
         const entries = try self._scanner.listDir(self._allocator, self._opened_dir_id);
         Scanner.deinitListDir(self._allocator, &self._entries);
@@ -78,7 +67,7 @@ fn updateEntries(self: *AppWindow, params: UpdateParams) !bool {
     return false;
 }
 
-fn openEntry(self: *AppWindow, index: usize) !bool {
+fn openEntry(self: *FilesView, index: usize) !bool {
     if (index < self._entries.items.len) {
         const entry = self._entries.items[index];
         if (entry.id) |id| {
@@ -92,7 +81,7 @@ fn openEntry(self: *AppWindow, index: usize) !bool {
     return false;
 }
 
-fn updateMouseShape(self: *AppWindow, ctx: *vxfw.EventContext) !void {
+fn updateMouseShape(self: *FilesView, ctx: *vxfw.EventContext) !void {
     if (self._last_mouse_row) |row| {
         const index = self._offset + row;
         if (index < self._entries.items.len and self._entries.items[index].id != null) {
@@ -102,17 +91,13 @@ fn updateMouseShape(self: *AppWindow, ctx: *vxfw.EventContext) !void {
     return ctx.setMouseShape(.default);
 }
 
-fn handleEvent(self: *AppWindow, ctx: *vxfw.EventContext, event: vxfw.Event) !void {
+pub fn handleEvent(self: *FilesView, ctx: *vxfw.EventContext, event: vxfw.Event) !void {
     switch (event) {
         .init => {
             try ctx.tick(0, self.widget());
         },
         .key_press => |key| {
             try ctx.setMouseShape(.default);
-            if (key.matches('c', .{ .ctrl = true })) {
-                ctx.quit = true;
-                return;
-            }
             if (key.matches(vaxis.Key.escape, .{}) or
                 key.matches(vaxis.Key.backspace, .{}) or
                 key.matches(vaxis.Key.left, .{}))
@@ -193,7 +178,7 @@ fn handleEvent(self: *AppWindow, ctx: *vxfw.EventContext, event: vxfw.Event) !vo
     }
 }
 
-fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
+pub fn draw(self: *FilesView, ctx: vxfw.DrawContext) !vxfw.Surface {
     const max_size = ctx.max.size();
     self._last_height = max_size.height;
 
@@ -323,11 +308,6 @@ fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
         .children = children.items,
     };
 }
-
-// fn formatSizeBar(slice: []u8, factor: f32) []u8 {
-//     const fac = std.math.clamp(factor, 0.0, 1.0);
-//     // const full_bars
-// }
 
 fn nameToUtf8(allocator: Allocator, bytes: []const u8) ![]const u8 {
     var new_bytes = std.ArrayList(u8).empty;

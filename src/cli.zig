@@ -3,7 +3,7 @@ const clap = @import("clap");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const Scanner = @import("Scanner.zig");
-const AppWindow = @import("ui/AppWindow.zig");
+const AppView = @import("ui/AppView.zig");
 const main = @import("main.zig");
 
 const Allocator = std.mem.Allocator;
@@ -57,9 +57,9 @@ pub fn run(allocator: Allocator) !u8 {
     var app = try vxfw.App.init(allocator);
     defer app.deinit();
 
-    const window = try allocator.create(AppWindow);
+    const window = try allocator.create(AppView);
     defer allocator.destroy(window);
-    window.* = try AppWindow.init(allocator, scanned_path);
+    window.* = try AppView.init(allocator, scanned_path);
     defer window.deinit();
 
     try app.run(window.widget(), .{});
