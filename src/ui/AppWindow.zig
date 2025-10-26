@@ -197,7 +197,8 @@ fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
     const max_size = ctx.max.size();
     self._last_height = max_size.height;
 
-    if (self._entries.items.len == 0) {
+    //TODO better scaling for smaller sizes
+    if (self._entries.items.len == 0 or max_size.width < 50) {
         return .{
             .size = max_size,
             .widget = self.widget(),
