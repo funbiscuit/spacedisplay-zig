@@ -13,6 +13,7 @@ _offset: u32 = 0,
 _opened_dir_id: ?u32 = null,
 _selected_index: usize = 1,
 _last_mouse_row: ?u32 = null,
+_last_height: ?u16 = null,
 _entries: std.ArrayList(Scanner.ListDirEntry) = .empty,
 
 const AvailableRoot = struct {
@@ -161,15 +162,20 @@ fn handleEvent(self: *AppWindow, ctx: *vxfw.EventContext, event: vxfw.Event) !vo
             if (mouse.button == .wheel_up) {
                 if (self._offset > 0) {
                     self._offset -= 1;
-                }
-                if (self._selected_index > 0) {
-                    self._selected_index -= 1;
+                    self._selected_index = self._offset + mouse.row;
                 }
                 ctx.consumeAndRedraw();
             }
             if (mouse.button == .wheel_down) {
                 self._offset += 1;
-                self._selected_index += 1;
+                if (self._last_height) |height| {
+                    if (height > self._entries.items.len) {
+                        self._offset = 0;
+                    } else {
+                        self._offset = @min(self._offset, self._entries.items.len - height);
+                    }
+                }
+                self._selected_index = self._offset + mouse.row;
                 ctx.consumeAndRedraw();
             }
             if (mouse.button == .left and mouse.type == .release) {
@@ -189,6 +195,7 @@ fn handleEvent(self: *AppWindow, ctx: *vxfw.EventContext, event: vxfw.Event) !vo
 
 fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
     const max_size = ctx.max.size();
+    self._last_height = max_size.height;
 
     if (self._entries.items.len == 0) {
         return .{
