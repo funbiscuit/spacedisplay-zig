@@ -54,6 +54,21 @@ pub fn hasChanges(self: Scanner) bool {
     return self._state._has_changes.swap(false, .seq_cst);
 }
 
+pub fn getEntryPath(self: *Scanner, allocator: Allocator, entry: ?u32) ![]const u8 {
+    const dir_id = entry orelse 1;
+
+    var path_buf = std.ArrayList(u8).empty;
+    errdefer path_buf.deinit(allocator);
+    self._state._mutex.lock();
+    defer self._state._mutex.unlock();
+
+    var index_buf = std.ArrayList(u32).empty;
+    defer index_buf.deinit(allocator);
+    try self._state._tree.computeFullPath(allocator, dir_id, &path_buf, &index_buf);
+
+    return try path_buf.toOwnedSlice(allocator);
+}
+
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
     for (entries.items) |entry| {
         allocator.free(entry.name);

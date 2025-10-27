@@ -73,9 +73,22 @@ fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
 
     var children = std.ArrayList(vxfw.SubSurface).empty;
 
+    //TODO if path is too long, it will clip. Replace path parts with ellipsis in this case
+    const opened_path = try self._scanner.getEntryPath(ctx.arena, self._files_view._opened_dir_id);
+
+    const border: vxfw.Border = .{
+        .child = self._files_view.widget(),
+        .labels = &[_]vxfw.Border.BorderLabel{
+            .{
+                .text = try std.fmt.allocPrint(ctx.arena, " {s} ", .{opened_path}),
+                .alignment = .top_left,
+            },
+        },
+    };
+
     try children.append(ctx.arena, .{
         .origin = .{ .row = 0, .col = 0 },
-        .surface = try self._files_view.draw(ctx),
+        .surface = try border.draw(ctx),
     });
 
     return .{
