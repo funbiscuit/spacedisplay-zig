@@ -4,3 +4,4 @@
 /build
 .zig-cache
 zig-out
+*.log

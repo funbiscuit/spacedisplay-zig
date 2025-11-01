@@ -5,6 +5,7 @@ const vxfw = vaxis.vxfw;
 const Scanner = @import("../Scanner.zig");
 
 const FilesView = @import("FilesView.zig");
+const ProgressBar = @import("ProgressBar.zig");
 
 const Allocator = std.mem.Allocator;
 const AppWindow = @This();
@@ -88,7 +89,28 @@ fn draw(self: *AppWindow, ctx: vxfw.DrawContext) !vxfw.Surface {
 
     try children.append(ctx.arena, .{
         .origin = .{ .row = 0, .col = 0 },
-        .surface = try border.draw(ctx),
+        .surface = try border.draw(ctx.withConstraints(
+            ctx.min,
+            .{
+                .width = max_size.width,
+                .height = max_size.height - 1,
+            },
+        )),
+    });
+
+    const stats: ProgressBar = .{
+        .stats = try self._scanner.getStats(ctx.arena, self._files_view._opened_dir_id),
+    };
+
+    try children.append(ctx.arena, .{
+        .origin = .{ .row = max_size.height - 1, .col = 0 },
+        .surface = try stats.draw(ctx.withConstraints(
+            ctx.min,
+            .{
+                .width = max_size.width,
+                .height = 1,
+            },
+        )),
     });
 
     return .{

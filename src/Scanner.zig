@@ -1,13 +1,26 @@
 const std = @import("std");
 const clap = @import("clap");
+const platform = @import("platform.zig");
 
 const Allocator = std.mem.Allocator;
 const Mutex = std.Thread.Mutex;
 const AtomicBool = std.atomic.Value(bool);
+const AtomicU32 = std.atomic.Value(u32);
+const AtomicU64 = std.atomic.Value(u64);
 const Scanner = @This();
 
 _state: *CommonState,
 _thread: std.Thread,
+
+pub const ScanStats = struct {
+    total_dirs: u32,
+    total_files: u32,
+    scanned_size: u64,
+    current_dir_size: u64,
+    unknown_size: u64,
+    available_size: u64,
+    is_mount_point: bool,
+};
 
 pub fn init(allocator: Allocator, scanned_path: []const u8) !Scanner {
     const state = try allocator.create(CommonState);
@@ -30,6 +43,36 @@ pub fn deinit(self: *Scanner, allocator: Allocator) void {
 
     self._state.deinit(allocator);
     allocator.destroy(self._state);
+}
+
+pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: ?u32) !ScanStats {
+    const scanned_size = self._state.scanned_size.load(.seq_cst);
+
+    var stats: ScanStats = .{
+        .total_dirs = self._state.total_dirs.load(.seq_cst),
+        .total_files = self._state.total_files.load(.seq_cst),
+        .scanned_size = scanned_size,
+        .current_dir_size = scanned_size,
+        .unknown_size = 0,
+        .available_size = 0,
+        .is_mount_point = false,
+    };
+
+    if (self._state._tree.get_node(dir_id orelse 1)) |n| {
+        if (n.parent > 0) {
+            stats.current_dir_size = @intCast(n.total_size);
+        }
+    }
+
+    const maybe_mount_stats = try platform.getMountStats(allocator, self._state._scanned_path);
+
+    if (maybe_mount_stats) |mount_stats| {
+        stats.unknown_size = mount_stats.total -| (mount_stats.reserved + mount_stats.available + stats.scanned_size);
+        stats.available_size = mount_stats.available;
+        stats.is_mount_point = mount_stats.is_mount_point;
+    }
+
+    return stats;
 }
 
 pub fn getParentId(self: *Scanner, element_id: ?u32) ?u32 {
@@ -196,6 +239,9 @@ const CommonState = struct {
     _has_changes: AtomicBool,
     _is_scanning: AtomicBool,
     _scanned_path: []const u8,
+    total_dirs: AtomicU32,
+    total_files: AtomicU32,
+    scanned_size: AtomicU64,
 
     fn init(scanned_path: []const u8) CommonState {
         return .{
@@ -205,6 +251,9 @@ const CommonState = struct {
             ._has_changes = AtomicBool.init(false),
             ._is_scanning = AtomicBool.init(false),
             ._scanned_path = scanned_path,
+            .total_dirs = AtomicU32.init(0),
+            .total_files = AtomicU32.init(0),
+            .scanned_size = AtomicU64.init(0),
         };
     }
 
@@ -241,9 +290,6 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
         .index = root,
     });
 
-    var dirs: u32 = 0;
-    var files: u32 = 0;
-    var total_size: u64 = 0;
     var next_print: u32 = 0;
 
     var path_buf = std.ArrayList(u8).empty;
@@ -289,18 +335,18 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
                         });
                     };
 
-                    dirs += 1;
+                    _ = state.total_dirs.fetchAdd(1, .seq_cst);
                     try queue.append(allocator, .{
                         .index = child_index,
                     });
                 },
                 .file => {
-                    files += 1;
+                    _ = state.total_files.fetchAdd(1, .seq_cst);
                     const stats = dir.statFile(entry.name) catch |err| {
                         std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
                         continue;
                     };
-                    total_size += stats.size;
+                    _ = state.scanned_size.fetchAdd(stats.size, .seq_cst);
                     files_size += stats.size;
                 },
                 else => {},
@@ -315,16 +361,25 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
             state._has_changes.store(true, .seq_cst);
             state._tree.add_size(item.index, @intCast(files_size));
         }
-        if (files > next_print) {
+        if (state.total_files.load(.seq_cst) > next_print) {
             next_print += 100_000;
-            std.log.info("Dirs: {d}. Files: {d}. Size: {d}", .{ dirs, files, total_size });
+            std.log.info("Dirs: {d}. Files: {d}. Size: {d}", .{
+                state.total_dirs.load(.seq_cst),
+                state.total_files.load(.seq_cst),
+                state.scanned_size.load(.seq_cst),
+            });
         }
     }
     const scan_millis: f64 = @floatFromInt(std.time.milliTimestamp() - scan_start_time);
 
     std.log.info(
         "Scan finished in {d:.2}s. Dirs: {d}. Files: {d}. Size: {d}",
-        .{ scan_millis / 1000, dirs, files, total_size },
+        .{
+            scan_millis / 1000,
+            state.total_dirs.load(.seq_cst),
+            state.total_files.load(.seq_cst),
+            state.scanned_size.load(.seq_cst),
+        },
     );
 }
 
