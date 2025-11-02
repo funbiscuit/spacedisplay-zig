@@ -139,10 +139,11 @@ pub fn listDir(self: *Scanner, allocator: Allocator, parent: ?u32) !std.ArrayLis
     defer {
         std.mem.sort(ListDirEntry, root_children.items, {}, ListDirEntry.lessThan);
     }
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
     const dir_id = parent orelse 1;
     var path_buf = std.ArrayList(u8).empty;
-    defer path_buf.deinit(allocator);
     {
         self._state._mutex.lock();
         defer self._state._mutex.unlock();
@@ -178,8 +179,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, parent: ?u32) !std.ArrayLis
         }
 
         var index_buf = std.ArrayList(u32).empty;
-        defer index_buf.deinit(allocator);
-        try self._state._tree.computeFullPath(allocator, dir_id, &path_buf, &index_buf);
+        try self._state._tree.computeFullPath(arena.allocator(), dir_id, &path_buf, &index_buf);
     }
 
     if (path_buf.items.len == 0) {
@@ -187,35 +187,22 @@ pub fn listDir(self: *Scanner, allocator: Allocator, parent: ?u32) !std.ArrayLis
     }
 
     const dir_path = path_buf.items;
-    std.log.info("get files in {s}", .{dir_path});
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
-        std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
-        return root_children;
-    };
-    defer dir.close();
+    const entries = try scanSingleDir(arena.allocator(), dir_path);
 
     //TODO check tree content match actual FS content
     // so rescan is triggered on mismatch
-    var it = dir.iterateAssumeFirstIteration();
-    while (it.next()) |maybe_entry| {
-        const entry = maybe_entry orelse break;
+    for (entries) |entry| {
         switch (entry.kind) {
             .file => {
-                const stats = dir.statFile(entry.name) catch |err| {
-                    std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
-                    continue;
-                };
                 try root_children.append(allocator, .{
                     .id = null,
                     .name = try allocator.dupe(u8, entry.name),
-                    .size = stats.size,
+                    .size = entry.size,
                     .kind = .file,
                 });
             },
             else => {},
         }
-    } else |err| {
-        std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
     }
 
     return root_children;
@@ -316,7 +303,11 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     defer path_buf_elems.deinit(allocator);
 
     defer state.currently_scanned_id.store(0, .seq_cst);
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
     while (queue.pop()) |item| {
+        defer _ = arena.reset(.retain_capacity);
         if (state._should_stop.load(.seq_cst)) {
             std.log.info("stop due to stop signal", .{});
             break;
@@ -330,56 +321,41 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
         }
 
         const dir_path = path_buf.items;
-        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
-            std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
-            continue;
-        };
-        defer dir.close();
+        const entries = try scanSingleDir(arena.allocator(), dir_path);
 
-        var it = dir.iterateAssumeFirstIteration();
-        var files_size: u64 = 0;
-        while (it.next()) |maybe_entry| {
-            const entry = maybe_entry orelse break;
-            switch (entry.kind) {
-                .directory => {
-                    const child_index = blk: {
-                        //TODO don't lock too often
-                        state._mutex.lock();
-                        defer state._mutex.unlock();
-                        defer state._has_changes.store(true, .seq_cst);
-
-                        break :blk try state._tree.add_node(allocator, .{
-                            .name = entry.name,
-                            .parent = item.index,
-                        });
-                    };
-
-                    _ = state.total_dirs.fetchAdd(1, .seq_cst);
-                    try queue.append(allocator, .{
-                        .index = child_index,
-                    });
-                },
-                .file => {
-                    _ = state.total_files.fetchAdd(1, .seq_cst);
-                    const stats = dir.statFile(entry.name) catch |err| {
-                        std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
-                        continue;
-                    };
-                    _ = state.scanned_size.fetchAdd(stats.size, .seq_cst);
-                    files_size += stats.size;
-                },
-                else => {},
-            }
-        } else |err| {
-            std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
-        }
-        if (files_size > 0) {
+        {
             state._mutex.lock();
             defer state._mutex.unlock();
 
+            var files_size: u64 = 0;
+            for (entries) |entry| {
+                switch (entry.kind) {
+                    .directory => {
+                        const child_index = blk: {
+                            break :blk try state._tree.add_node(allocator, .{
+                                .name = entry.name,
+                                .parent = item.index,
+                            });
+                        };
+
+                        _ = state.total_dirs.fetchAdd(1, .seq_cst);
+                        try queue.append(allocator, .{
+                            .index = child_index,
+                        });
+                    },
+                    .file => {
+                        _ = state.total_files.fetchAdd(1, .seq_cst);
+                        files_size += entry.size;
+                    },
+                }
+            }
+            if (files_size > 0) {
+                _ = state.scanned_size.fetchAdd(files_size, .seq_cst);
+                state._tree.add_size(item.index, @intCast(files_size));
+            }
             state._has_changes.store(true, .seq_cst);
-            state._tree.add_size(item.index, @intCast(files_size));
         }
+
         if (state.total_files.load(.seq_cst) > next_print) {
             next_print += 100_000;
             std.log.info("Dirs: {d}. Files: {d}. Size: {d}", .{
@@ -400,6 +376,57 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
             state.scanned_size.load(.seq_cst),
         },
     );
+}
+
+const DirElement = struct {
+    name: []const u8,
+    size: u64,
+    kind: Kind,
+
+    pub const Kind = enum {
+        directory,
+        file,
+    };
+};
+
+fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]DirElement {
+    var entries = std.ArrayList(DirElement).empty;
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
+        return entries.items;
+    };
+    defer dir.close();
+
+    var it = dir.iterateAssumeFirstIteration();
+    while (it.next()) |maybe_entry| {
+        const entry = maybe_entry orelse break;
+        const name = try arena.dupe(u8, entry.name);
+        switch (entry.kind) {
+            .directory => {
+                try entries.append(arena, .{
+                    .name = name,
+                    .size = 0,
+                    .kind = .directory,
+                });
+            },
+            .file => {
+                const stats = dir.statFile(entry.name) catch |err| {
+                    std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
+                    continue;
+                };
+                try entries.append(arena, .{
+                    .name = name,
+                    .size = stats.size,
+                    .kind = .file,
+                });
+            },
+            else => {},
+        }
+    } else |err| {
+        std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
+    }
+
+    return entries.items;
 }
 
 fn printTree(tree: Tree, root: u32, indent: usize) void {
