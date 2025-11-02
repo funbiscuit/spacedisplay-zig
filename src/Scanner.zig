@@ -25,7 +25,8 @@ pub const ScanStats = struct {
 pub fn init(allocator: Allocator, scanned_path: []const u8) !Scanner {
     const state = try allocator.create(CommonState);
     errdefer allocator.destroy(state);
-    state.* = CommonState.init(scanned_path);
+    state.* = try CommonState.init(allocator, scanned_path);
+    errdefer state.deinit(allocator);
 
     state._is_scanning.store(true, .seq_cst);
 
@@ -246,9 +247,9 @@ const CommonState = struct {
     scanned_size: AtomicU64,
     currently_scanned_id: AtomicU32,
 
-    fn init(scanned_path: []const u8) CommonState {
+    fn init(allocator: Allocator, scanned_path: []const u8) !CommonState {
         return .{
-            ._tree = Tree.init(),
+            ._tree = try Tree.init(allocator, scanned_path),
             ._mutex = .{},
             ._should_stop = AtomicBool.init(false),
             ._has_changes = AtomicBool.init(false),
@@ -275,14 +276,6 @@ fn workerFunc(state: *CommonState, allocator: Allocator) void {
 
 fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     const scan_start_time = std.time.milliTimestamp();
-    const root = blk: {
-        state._mutex.lock();
-        defer state._mutex.unlock();
-
-        break :blk try state._tree.addNode(allocator, .{
-            .name = state._scanned_path,
-        });
-    };
 
     const QueueItem = struct {
         index: u32,
@@ -291,7 +284,7 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     var queue = std.ArrayList(QueueItem).empty;
     defer queue.deinit(allocator);
     try queue.append(allocator, .{
-        .index = root,
+        .index = Tree.root_id,
     });
 
     var next_print: u32 = 0;

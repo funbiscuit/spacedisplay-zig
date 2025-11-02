@@ -4,6 +4,8 @@ const StringPool = @import("StringPool.zig");
 const Allocator = std.mem.Allocator;
 const Tree = @This();
 
+pub const root_id: u32 = 1;
+
 _nodes: std.ArrayList(DirEntry),
 _strings: StringPool,
 
@@ -19,11 +21,16 @@ pub const DirEntry = struct {
     total_size: i64,
 };
 
-pub fn init() Tree {
-    return Tree{
+pub fn init(allocator: Allocator, root: []const u8) !Tree {
+    var tree = Tree{
         ._nodes = std.ArrayList(DirEntry).empty,
         ._strings = .{},
     };
+    const id = try tree.addNode(allocator, .{
+        .name = root,
+    });
+    std.debug.assert(root_id == id);
+    return tree;
 }
 
 pub fn deinit(self: *Tree, allocator: Allocator) void {
