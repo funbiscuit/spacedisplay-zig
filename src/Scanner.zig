@@ -112,6 +112,21 @@ pub fn getEntryPath(self: *Scanner, allocator: Allocator, entry: ?u32) ![]const 
     return try path_buf.toOwnedSlice(allocator);
 }
 
+pub fn getScannedChildId(self: *Scanner, parent: ?u32) ?u32 {
+    const dir_id = parent orelse 1;
+    var scanned_id = self._state.currently_scanned_id.load(.seq_cst);
+
+    self._state._mutex.lock();
+    defer self._state._mutex.unlock();
+    while (self._state._tree.get_node(scanned_id)) |scanned| {
+        if (scanned.parent == dir_id) {
+            return scanned_id;
+        }
+        scanned_id = scanned.parent;
+    }
+    return null;
+}
+
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
     for (entries.items) |entry| {
         allocator.free(entry.name);
@@ -242,6 +257,7 @@ const CommonState = struct {
     total_dirs: AtomicU32,
     total_files: AtomicU32,
     scanned_size: AtomicU64,
+    currently_scanned_id: AtomicU32,
 
     fn init(scanned_path: []const u8) CommonState {
         return .{
@@ -254,6 +270,7 @@ const CommonState = struct {
             .total_dirs = AtomicU32.init(0),
             .total_files = AtomicU32.init(0),
             .scanned_size = AtomicU64.init(0),
+            .currently_scanned_id = AtomicU32.init(0),
         };
     }
 
@@ -298,11 +315,13 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     var path_buf_elems = std.ArrayList(u32).empty;
     defer path_buf_elems.deinit(allocator);
 
+    defer state.currently_scanned_id.store(0, .seq_cst);
     while (queue.pop()) |item| {
         if (state._should_stop.load(.seq_cst)) {
             std.log.info("stop due to stop signal", .{});
             break;
         }
+        state.currently_scanned_id.store(item.index, .seq_cst);
 
         {
             state._mutex.lock();

@@ -12,6 +12,7 @@ _allocator: Allocator,
 _scanner: *Scanner,
 _offset: u32 = 0,
 _opened_dir_id: ?u32 = null,
+_scanned_child_id: ?u32 = null,
 _selected_index: usize = 1,
 _last_mouse_row: ?u32 = null,
 _last_height: ?u16 = null,
@@ -52,6 +53,9 @@ const UpdateParams = struct {
 };
 
 fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
+    const new_scanned_id = self._scanner.getScannedChildId(self._opened_dir_id);
+    const scanned_changed = new_scanned_id != self._scanned_child_id;
+    self._scanned_child_id = new_scanned_id;
     if (self._scanner.hasChanges() or params.force) {
         const entries = try self._scanner.listDir(self._allocator, self._opened_dir_id);
         Scanner.deinitListDir(self._allocator, &self._entries);
@@ -65,7 +69,8 @@ fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
         }
         return true;
     }
-    return false;
+
+    return scanned_changed;
 }
 
 fn openEntry(self: *FilesView, index: usize) !bool {
@@ -256,7 +261,7 @@ pub fn draw(self: *FilesView, ctx: vxfw.DrawContext) !vxfw.Surface {
                 .style = style,
             };
             try children.append(ctx.arena, .{
-                .origin = .{ .row = @intCast(i), .col = max_name_width + 6 },
+                .origin = .{ .row = @intCast(i), .col = max_name_width + 4 },
                 .surface = try size_widget.draw(ctx),
             });
 
@@ -299,6 +304,19 @@ pub fn draw(self: *FilesView, ctx: vxfw.DrawContext) !vxfw.Surface {
                 .origin = .{ .row = @intCast(i), .col = max_name_width + 6 + 8 + 1 },
                 .surface = bar_surface,
             });
+
+            if (self._scanned_child_id != null and e.id == self._scanned_child_id) {
+                const frames: []const []const u8 = &.{ "⠋", "⠙", "⠹", "⢸", "⣰", "⣠", "⣄", "⣆", "⡇", "⠏" };
+                const frame = (@as(usize, @intCast(@max(0, std.time.milliTimestamp()))) / 100) % frames.len;
+                const spinner_widget: vxfw.Text = .{
+                    .text = frames[frame],
+                    .style = style,
+                };
+                try children.append(ctx.arena, .{
+                    .origin = .{ .row = @intCast(i), .col = max_name_width + 6 + 8 + 1 - 2 },
+                    .surface = try spinner_widget.draw(ctx),
+                });
+            }
         }
     }
 
