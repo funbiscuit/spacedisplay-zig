@@ -51,10 +51,15 @@ pub fn init(allocator: Allocator, root: []const u8) !Tree {
         ._nodes = std.ArrayList(DirEntry).empty,
         ._strings = .{},
     };
-    const id = try tree.addNode(allocator, .{
-        .name = root,
+    errdefer tree.deinit(allocator);
+
+    const name_start = try tree._strings.add(allocator, root);
+    try tree._nodes.append(allocator, .{
+        ._name_start = @intCast(name_start),
+        ._name_len = @intCast(root.len),
+        .parent = .none,
+        .total_size = 0,
     });
-    std.debug.assert(id._id == EntryId.root._id);
     return tree;
 }
 
@@ -71,31 +76,32 @@ pub fn addSize(self: *Tree, dir_id: EntryId, size: i64) void {
     }
 }
 
-pub const NewNode = struct {
-    name: []const u8,
-    parent: EntryId = .none,
-};
-
-pub fn addNode(self: *Tree, allocator: Allocator, node: NewNode) !EntryId {
-    const name_start = try self._strings.add(allocator, node.name);
-
-    var tree_node = DirEntry{
-        ._name_start = @intCast(name_start),
-        ._name_len = @intCast(node.name.len),
-        .parent = node.parent,
-        .total_size = 0,
-    };
-    const node_id: EntryId = .fromIndex(self._nodes.items.len);
+pub fn addNode(self: *Tree, allocator: Allocator, node: anytype) !EntryId {
+    if (@typeInfo(@TypeOf(node)) != .@"struct") {
+        @compileError("Expected struct type, got " ++ @typeName(@TypeOf(node)));
+    }
 
     if (node.parent.asIndex()) |index| {
+        const name_start = try self._strings.add(allocator, node.name);
+        var tree_node: DirEntry = .{
+            ._name_start = @intCast(name_start),
+            ._name_len = @intCast(node.name.len),
+            .parent = node.parent,
+            .total_size = 0,
+        };
+        const node_id: EntryId = .fromIndex(self._nodes.items.len);
+
         var parent: *DirEntry = &self._nodes.items[index];
         const prev_first = parent.first_child;
         parent.first_child = node_id;
         tree_node.next_node = prev_first;
-    }
-    try self._nodes.append(allocator, tree_node);
 
-    return node_id;
+        try self._nodes.append(allocator, tree_node);
+
+        return node_id;
+    } else {
+        return error.ParentRequired;
+    }
 }
 
 pub fn getNode(self: Tree, id: EntryId) ?DirEntry {
