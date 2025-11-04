@@ -3,6 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
 const Scanner = @import("../Scanner.zig");
+const Tree = @import("../Tree.zig");
 const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;
@@ -11,8 +12,8 @@ const FilesView = @This();
 _allocator: Allocator,
 _scanner: *Scanner,
 _offset: u32 = 0,
-_opened_dir_id: ?u32 = null,
-_scanned_child_id: ?u32 = null,
+_opened_dir_id: Tree.EntryId = .root,
+_scanned_child_id: Tree.EntryId = .none,
 _selected_index: usize = 1,
 _last_mouse_row: ?u32 = null,
 _last_height: ?u16 = null,
@@ -49,20 +50,20 @@ fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw
 
 const UpdateParams = struct {
     force: bool = false,
-    select_id: ?u32 = null,
+    select_id: Tree.EntryId = .none,
 };
 
 fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
     const new_scanned_id = self._scanner.getScannedChildId(self._opened_dir_id);
-    const scanned_changed = new_scanned_id != self._scanned_child_id;
+    const scanned_changed = !new_scanned_id.eql(self._scanned_child_id);
     self._scanned_child_id = new_scanned_id;
     if (self._scanner.hasChanges() or params.force) {
         const entries = try self._scanner.listDir(self._allocator, self._opened_dir_id);
         Scanner.deinitListDir(self._allocator, &self._entries);
         self._entries = entries;
-        if (params.select_id) |id| {
+        if (params.select_id.isSome()) {
             for (self._entries.items, 0..) |e, i| {
-                if (e.id == id) {
+                if (e.id.eql(params.select_id)) {
                     self._selected_index = i;
                 }
             }
@@ -76,8 +77,8 @@ fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
 fn openEntry(self: *FilesView, index: usize) !bool {
     if (index < self._entries.items.len) {
         const entry = self._entries.items[index];
-        if (entry.id) |id| {
-            self._opened_dir_id = id;
+        if (entry.id.isSome()) {
+            self._opened_dir_id = entry.id;
             self._offset = 0;
             self._selected_index = self._last_mouse_row orelse 1;
             _ = try self.updateEntries(.{ .force = true });
@@ -90,7 +91,7 @@ fn openEntry(self: *FilesView, index: usize) !bool {
 fn updateMouseShape(self: *FilesView, ctx: *vxfw.EventContext) !void {
     if (self._last_mouse_row) |row| {
         const index = self._offset + row;
-        if (index < self._entries.items.len and self._entries.items[index].id != null) {
+        if (index < self._entries.items.len and self._entries.items[index].id.isSome()) {
             return ctx.setMouseShape(.pointer);
         }
     }
@@ -108,7 +109,8 @@ pub fn handleEvent(self: *FilesView, ctx: *vxfw.EventContext, event: vxfw.Event)
                 key.matches(vaxis.Key.backspace, .{}) or
                 key.matches(vaxis.Key.left, .{}))
             {
-                if (self._scanner.getParentId(self._opened_dir_id)) |parent| {
+                const parent = self._scanner.getParentId(self._opened_dir_id);
+                if (parent.isSome()) {
                     const select_id = self._opened_dir_id;
                     self._opened_dir_id = parent;
                     self._selected_index = 0;
@@ -305,7 +307,7 @@ pub fn draw(self: *FilesView, ctx: vxfw.DrawContext) !vxfw.Surface {
                 .surface = bar_surface,
             });
 
-            if (self._scanned_child_id != null and e.id == self._scanned_child_id) {
+            if (self._scanned_child_id.isSome() and e.id.eql(self._scanned_child_id)) {
                 const frames: []const []const u8 = &.{ "⠋", "⠙", "⠹", "⢸", "⣰", "⣠", "⣄", "⣆", "⡇", "⠏" };
                 const frame = (@as(usize, @intCast(@max(0, std.time.milliTimestamp()))) / 100) % frames.len;
                 const spinner_widget: vxfw.Text = .{
