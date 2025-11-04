@@ -59,10 +59,9 @@ pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !Sca
         .is_mount_point = false,
     };
 
-    if (self._state._tree.getNode(dir_id)) |n| {
-        if (n.parent() != null) {
-            stats.current_dir_size = @intCast(n.total_size);
-        }
+    const node = self._state._tree.getNode(dir_id);
+    if (node.parent() != null) {
+        stats.current_dir_size = @intCast(node.total_size);
     }
 
     const maybe_mount_stats = try platform.getMountStats(allocator, self._state._scanned_path);
@@ -79,11 +78,7 @@ pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !Sca
 pub fn getParentId(self: *Scanner, element_id: Tree.EntryId) ?Tree.EntryId {
     self._state._mutex.lock();
     defer self._state._mutex.unlock();
-
-    if (self._state._tree.getNode(element_id)) |elem| {
-        return elem.parent();
-    }
-    return null;
+    return self._state._tree.getNode(element_id).parent();
 }
 
 pub fn isScanning(self: Scanner) bool {
@@ -115,7 +110,8 @@ pub fn getScannedChildId(self: *Scanner, parent: Tree.EntryId) ?Tree.EntryId {
 
     self._state._mutex.lock();
     defer self._state._mutex.unlock();
-    while (self._state._tree.getNode(scanned_id)) |scanned| {
+    while (true) {
+        const scanned = self._state._tree.getNode(scanned_id);
         if (scanned.parent()) |scanned_parent| {
             if (scanned_parent.eql(parent)) {
                 return scanned_id;
@@ -146,36 +142,36 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
         self._state._mutex.lock();
         defer self._state._mutex.unlock();
 
-        if (self._state._tree.getNode(dir_id)) |root| {
-            if (root.parent()) |parent| {
+        const root = self._state._tree.getNode(dir_id);
+        if (root.parent()) |parent| {
+            try root_children.append(allocator, .{
+                .id = parent,
+                .name = try allocator.dupe(u8, ".."),
+                .size = 0,
+                .kind = .parent,
+            });
+        } else {
+            try root_children.append(allocator, .{
+                .id = .root,
+                .name = try allocator.dupe(u8, "."),
+                .size = 0,
+                .kind = .parent,
+            });
+        }
+
+        if (root.firstChild()) |first| {
+            var current = first;
+
+            while (true) {
+                const entry = self._state._tree.getNode(current);
                 try root_children.append(allocator, .{
-                    .id = parent,
-                    .name = try allocator.dupe(u8, ".."),
-                    .size = 0,
-                    .kind = .parent,
+                    .id = current,
+                    .name = try allocator.dupe(u8, self._state._tree.getNodeName(entry)),
+                    .size = if (entry.total_size >= 0) @intCast(entry.total_size) else 0,
+                    .kind = .directory,
                 });
-            } else {
-                try root_children.append(allocator, .{
-                    .id = .root,
-                    .name = try allocator.dupe(u8, "."),
-                    .size = 0,
-                    .kind = .parent,
-                });
-            }
 
-            if (root.firstChild()) |first| {
-                var current = first;
-
-                while (self._state._tree.getNode(current)) |entry| {
-                    try root_children.append(allocator, .{
-                        .id = current,
-                        .name = try allocator.dupe(u8, self._state._tree.getNodeName(entry)),
-                        .size = if (entry.total_size >= 0) @intCast(entry.total_size) else 0,
-                        .kind = .directory,
-                    });
-
-                    current = entry.nextNode() orelse break;
-                }
+                current = entry.nextNode() orelse break;
             }
         }
 

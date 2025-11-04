@@ -16,6 +16,10 @@ pub const EntryId = packed struct {
     pub fn eql(self: EntryId, other: EntryId) bool {
         return self._index == other._index;
     }
+
+    fn asId(self: EntryId) u32 {
+        return self._index + 1;
+    }
 };
 
 pub const DirEntry = struct {
@@ -27,7 +31,7 @@ pub const DirEntry = struct {
     _parent: u32 = 0,
 
     /// Size of all its children
-    total_size: i64,
+    total_size: i64 = 0,
 
     pub fn firstChild(self: DirEntry) ?EntryId {
         return if (self._first_child > 0)
@@ -104,11 +108,9 @@ pub fn addNode(self: *Tree, allocator: Allocator, node: anytype) !EntryId {
     return .{ ._index = node_index };
 }
 
-pub fn getNode(self: Tree, id: EntryId) ?DirEntry {
-    if (id._index < self._nodes.items.len) {
-        return self._nodes.items[id._index];
-    }
-    return null;
+pub fn getNode(self: Tree, id: EntryId) DirEntry {
+    std.debug.assert(id._index < self._nodes.items.len);
+    return self._nodes.items[id._index];
 }
 
 pub fn getNodeName(self: Tree, entry: DirEntry) []const u8 {
@@ -125,7 +127,8 @@ pub fn computeFullPath(
     var total_path_size: usize = 0;
     id_buf.clearRetainingCapacity();
     var current = id;
-    while (self.getNode(current)) |node| {
+    while (true) {
+        const node = self.getNode(current);
         try id_buf.append(allocator, current);
         if (total_path_size > 0) {
             //separator
@@ -137,7 +140,7 @@ pub fn computeFullPath(
     path_buf.clearRetainingCapacity();
     try path_buf.ensureTotalCapacity(allocator, total_path_size);
     for (0..id_buf.items.len) |idx| {
-        const node = self.getNode(id_buf.items[id_buf.items.len - idx - 1]) orelse break;
+        const node = self.getNode(id_buf.items[id_buf.items.len - idx - 1]);
         const elem_name = self._strings.get(node._name_start, node._name_len);
         if (idx > 0) {
             path_buf.appendAssumeCapacity('/');
