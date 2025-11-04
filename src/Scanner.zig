@@ -294,7 +294,7 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     while (queue.pop()) |item| {
-        defer _ = arena.reset(.retain_capacity);
+        _ = arena.reset(.retain_capacity);
         if (state._should_stop.load(.seq_cst)) {
             std.log.info("stop due to stop signal", .{});
             break;
@@ -310,38 +310,60 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
         const dir_path = path_buf.items;
         const entries = try scanSingleDir(arena.allocator(), dir_path);
 
+        var dir_names = std.ArrayList([]const u8).empty;
+        var files_size: u64 = 0;
+        for (entries) |entry| {
+            switch (entry.kind) {
+                .directory => {
+                    try dir_names.append(arena.allocator(), entry.name);
+                },
+                .file => {
+                    files_size += entry.size;
+                },
+            }
+        }
+
+        var size_delta: i64 = 0;
+        var files_delta: i32 = 0;
+        var set_children_result: Tree.SetChildrenResult = undefined;
         {
             state._mutex.lock();
             defer state._mutex.unlock();
 
-            var files_size: u64 = 0;
-            for (entries) |entry| {
-                switch (entry.kind) {
-                    .directory => {
-                        const child_id = blk: {
-                            break :blk try state._tree.addNode(allocator, .{
-                                .name = entry.name,
-                                .parent = item.id,
-                            });
-                        };
-
-                        _ = state.total_dirs.fetchAdd(1, .seq_cst);
-                        try queue.append(allocator, .{
-                            .id = child_id,
-                        });
-                    },
-                    .file => {
-                        _ = state.total_files.fetchAdd(1, .seq_cst);
-                        files_size += entry.size;
-                    },
-                }
-            }
-            if (files_size > 0) {
-                _ = state.scanned_size.fetchAdd(files_size, .seq_cst);
-                state._tree.addSize(item.id, @intCast(files_size));
-            }
-            state._has_changes.store(true, .seq_cst);
+            const prev_root = state._tree.getNode(item.id);
+            size_delta -= prev_root.total_size;
+            files_delta -= @intCast(prev_root.files);
+            set_children_result = try state._tree.setChildren(
+                allocator,
+                arena.allocator(),
+                item.id,
+                dir_names.items,
+                files_size,
+                @intCast(entries.len - dir_names.items.len),
+            );
+            const new_root = state._tree.getNode(item.id);
+            size_delta += new_root.total_size;
+            files_delta += @intCast(new_root.files);
         }
+        for (set_children_result.new_dirs) |dir_id| {
+            try queue.append(allocator, .{
+                .id = dir_id,
+            });
+        }
+        _ = state.total_dirs.fetchAdd(@intCast(set_children_result.new_dirs.len), .seq_cst);
+        _ = state.total_dirs.fetchSub(set_children_result.removed_dirs, .seq_cst);
+        if (size_delta > 0) {
+            _ = state.scanned_size.fetchAdd(@intCast(size_delta), .seq_cst);
+        } else if (size_delta < 0) {
+            _ = state.scanned_size.fetchSub(@intCast(-size_delta), .seq_cst);
+        }
+        if (files_delta > 0) {
+            _ = state.total_files.fetchAdd(@intCast(files_delta), .seq_cst);
+        } else if (files_delta < 0) {
+            _ = state.total_files.fetchSub(@intCast(-files_delta), .seq_cst);
+        }
+
+        state._has_changes.store(true, .seq_cst);
 
         if (state.total_files.load(.seq_cst) > next_print) {
             next_print += 100_000;
