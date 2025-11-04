@@ -1,6 +1,7 @@
 const std = @import("std");
 const platform = @import("platform.zig");
 const Tree = @import("Tree.zig");
+const queue = @import("queue.zig");
 
 const Allocator = std.mem.Allocator;
 const Mutex = std.Thread.Mutex;
@@ -137,8 +138,11 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
+    var need_rescan = false;
+
     var path_buf = std.ArrayList(u8).empty;
-    {
+    var dirs_current_size: i64 = 0;
+    const dir_entry = blk: {
         self._state._mutex.lock();
         defer self._state._mutex.unlock();
 
@@ -164,20 +168,24 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
 
             while (true) {
                 const entry = self._state._tree.getNode(current);
+                const size: u64 = if (entry.total_size >= 0) @intCast(entry.total_size) else 0;
                 try root_children.append(allocator, .{
                     .id = current,
                     .name = try allocator.dupe(u8, self._state._tree.getNodeName(entry)),
-                    .size = if (entry.total_size >= 0) @intCast(entry.total_size) else 0,
+                    .size = size,
                     .kind = .directory,
                 });
 
+                dirs_current_size += @intCast(size);
                 current = entry.nextNode() orelse break;
             }
         }
 
         var id_buf = std.ArrayList(Tree.EntryId).empty;
         try self._state._tree.computeFullPath(arena.allocator(), dir_id, &path_buf, &id_buf);
-    }
+
+        break :blk root;
+    };
 
     if (path_buf.items.len == 0) {
         return root_children;
@@ -186,11 +194,29 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
     const dir_path = path_buf.items;
     const entries = try scanSingleDir(arena.allocator(), dir_path);
 
-    //TODO check tree content match actual FS content
-    // so rescan is triggered on mismatch
+    const dirs_current = root_children.items.len -| 1;
+    var dirs_matched: u32 = 0;
+    var files_actual: u32 = 0;
+    var files_actual_size: i64 = 0;
     for (entries) |entry| {
         switch (entry.kind) {
+            .directory => {
+                for (root_children.items) |*item| {
+                    if (std.mem.eql(u8, item.name, entry.name)) {
+                        if (item.kind == .directory) {
+                            dirs_matched += 1;
+                        } else {
+                            need_rescan = true;
+                        }
+                        break;
+                    }
+                } else {
+                    need_rescan = true;
+                }
+            },
             .file => {
+                files_actual += 1;
+                files_actual_size += @intCast(entry.size);
                 try root_children.append(allocator, .{
                     .id = null,
                     .name = try allocator.dupe(u8, entry.name),
@@ -198,8 +224,19 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
                     .kind = .file,
                 });
             },
-            else => {},
         }
+    }
+
+    need_rescan |= files_actual != dir_entry.files;
+    need_rescan |= files_actual_size != (dir_entry.total_size - dirs_current_size);
+    need_rescan |= dirs_current != dirs_matched;
+
+    if (need_rescan) {
+        std.log.info("rescanning {s}", .{dir_path});
+        self._state.user_scan_queue.putBack(.{
+            .id = dir_id,
+            .recursive = false,
+        }) catch {};
     }
 
     return root_children;
@@ -238,10 +275,16 @@ const CommonState = struct {
     _has_changes: AtomicBool,
     _is_scanning: AtomicBool,
     _scanned_path: []const u8,
+    user_scan_queue: queue.Queue(QueueItem, 16),
     total_dirs: AtomicU32,
     total_files: AtomicU32,
     scanned_size: AtomicU64,
     currently_scanned_id: std.atomic.Value(Tree.EntryId),
+
+    const QueueItem = struct {
+        id: Tree.EntryId,
+        recursive: bool,
+    };
 
     fn init(allocator: Allocator, scanned_path: []const u8) !CommonState {
         return .{
@@ -251,6 +294,7 @@ const CommonState = struct {
             ._has_changes = .init(false),
             ._is_scanning = .init(false),
             ._scanned_path = scanned_path,
+            .user_scan_queue = .{},
             .total_dirs = .init(0),
             .total_files = .init(0),
             .scanned_size = .init(0),
@@ -273,14 +317,11 @@ fn workerFunc(state: *CommonState, allocator: Allocator) void {
 fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     const scan_start_time = std.time.milliTimestamp();
 
-    const QueueItem = struct {
-        id: Tree.EntryId,
-    };
-
-    var queue = std.ArrayList(QueueItem).empty;
-    defer queue.deinit(allocator);
-    try queue.append(allocator, .{
+    var scan_queue = std.ArrayList(CommonState.QueueItem).empty;
+    defer scan_queue.deinit(allocator);
+    try scan_queue.append(allocator, .{
         .id = .root,
+        .recursive = true,
     });
 
     var next_print: u32 = 0;
@@ -293,12 +334,25 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    while (queue.pop()) |item| {
+    while (true) {
         _ = arena.reset(.retain_capacity);
         if (state._should_stop.load(.seq_cst)) {
             std.log.info("stop due to stop signal", .{});
             break;
         }
+        const item = blk: {
+            if (state.user_scan_queue.popBack()) |user_item| {
+                break :blk user_item;
+            }
+            if (scan_queue.pop()) |normal_item| {
+                break :blk normal_item;
+            }
+            state._is_scanning.store(false, .seq_cst);
+            std.Thread.sleep(100_000);
+            continue;
+        };
+
+        state._is_scanning.store(true, .seq_cst);
         state.currently_scanned_id.store(item.id, .seq_cst);
 
         {
@@ -346,9 +400,18 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
             files_delta += @intCast(new_root.files);
         }
         for (set_children_result.new_dirs) |dir_id| {
-            try queue.append(allocator, .{
+            try scan_queue.append(allocator, .{
                 .id = dir_id,
+                .recursive = true,
             });
+        }
+        if (item.recursive) {
+            for (set_children_result.existing_dirs) |dir_id| {
+                try scan_queue.append(allocator, .{
+                    .id = dir_id,
+                    .recursive = true,
+                });
+            }
         }
         _ = state.total_dirs.fetchAdd(@intCast(set_children_result.new_dirs.len), .seq_cst);
         _ = state.total_dirs.fetchSub(set_children_result.removed_dirs, .seq_cst);

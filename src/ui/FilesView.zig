@@ -17,6 +17,7 @@ _scanned_child_id: ?Tree.EntryId = null,
 _selected_index: usize = 1,
 _last_mouse_row: ?u32 = null,
 _last_height: ?u16 = null,
+_last_update_time: i64 = 0,
 _entries: std.ArrayList(Scanner.ListDirEntry) = .empty,
 
 pub fn init(allocator: Allocator, scanner: *Scanner) FilesView {
@@ -57,7 +58,9 @@ fn updateEntries(self: *FilesView, params: UpdateParams) !bool {
     const new_scanned_id = self._scanner.getScannedChildId(self._opened_dir_id);
     const scanned_changed = new_scanned_id != self._scanned_child_id;
     self._scanned_child_id = new_scanned_id;
-    if (self._scanner.hasChanges() or params.force) {
+    const now = std.time.milliTimestamp();
+    if (self._scanner.hasChanges() or params.force or self._last_update_time + 500 < now) {
+        self._last_update_time = now;
         const entries = try self._scanner.listDir(self._allocator, self._opened_dir_id);
         Scanner.deinitListDir(self._allocator, &self._entries);
         self._entries = entries;
