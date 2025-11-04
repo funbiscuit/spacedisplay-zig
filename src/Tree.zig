@@ -7,30 +7,14 @@ const Tree = @This();
 _nodes: std.ArrayList(DirEntry),
 _strings: StringPool,
 
+/// Represents id of some entry inside a tree
 pub const EntryId = packed struct {
-    _id: u32,
+    _index: u32,
 
-    pub const none: EntryId = .{ ._id = 0 };
-    pub const root: EntryId = .{ ._id = 1 };
-
-    pub fn isNone(self: EntryId) bool {
-        return self.eql(.none);
-    }
-
-    pub fn isSome(self: EntryId) bool {
-        return !self.eql(.none);
-    }
+    pub const root: EntryId = .{ ._index = 0 };
 
     pub fn eql(self: EntryId, other: EntryId) bool {
-        return self._id == other._id;
-    }
-
-    fn asIndex(self: EntryId) ?usize {
-        return if (self._id == 0) null else self._id - 1;
-    }
-
-    fn fromIndex(index: usize) EntryId {
-        return .{ ._id = @intCast(index + 1) };
+        return self._index == other._index;
     }
 };
 
@@ -38,12 +22,33 @@ pub const DirEntry = struct {
     _name_start: u32,
     _name_len: u16,
 
-    first_child: EntryId = .none,
-    next_node: EntryId = .none,
-    parent: EntryId = .none,
+    _first_child: u32 = 0,
+    _next_node: u32 = 0,
+    _parent: u32 = 0,
 
     /// Size of all its children
     total_size: i64,
+
+    pub fn firstChild(self: DirEntry) ?EntryId {
+        return if (self._first_child > 0)
+            .{ ._index = self._first_child - 1 }
+        else
+            null;
+    }
+
+    pub fn nextNode(self: DirEntry) ?EntryId {
+        return if (self._next_node > 0)
+            .{ ._index = self._next_node - 1 }
+        else
+            null;
+    }
+
+    pub fn parent(self: DirEntry) ?EntryId {
+        return if (self._parent > 0)
+            .{ ._index = self._parent - 1 }
+        else
+            null;
+    }
 };
 
 pub fn init(allocator: Allocator, root: []const u8) !Tree {
@@ -57,7 +62,6 @@ pub fn init(allocator: Allocator, root: []const u8) !Tree {
     try tree._nodes.append(allocator, .{
         ._name_start = @intCast(name_start),
         ._name_len = @intCast(root.len),
-        .parent = .none,
         .total_size = 0,
     });
     return tree;
@@ -69,10 +73,10 @@ pub fn deinit(self: *Tree, allocator: Allocator) void {
 }
 
 pub fn addSize(self: *Tree, dir_id: EntryId, size: i64) void {
-    var current = dir_id;
-    while (current.asIndex()) |index| {
-        self._nodes.items[index].total_size += size;
-        current = self._nodes.items[index].parent;
+    var current_id: ?EntryId = dir_id;
+    while (current_id) |id| {
+        self._nodes.items[id._index].total_size += size;
+        current_id = self._nodes.items[id._index].parent();
     }
 }
 
@@ -81,34 +85,28 @@ pub fn addNode(self: *Tree, allocator: Allocator, node: anytype) !EntryId {
         @compileError("Expected struct type, got " ++ @typeName(@TypeOf(node)));
     }
 
-    if (node.parent.asIndex()) |index| {
-        const name_start = try self._strings.add(allocator, node.name);
-        var tree_node: DirEntry = .{
-            ._name_start = @intCast(name_start),
-            ._name_len = @intCast(node.name.len),
-            .parent = node.parent,
-            .total_size = 0,
-        };
-        const node_id: EntryId = .fromIndex(self._nodes.items.len);
+    const name_start = try self._strings.add(allocator, node.name);
+    var tree_node: DirEntry = .{
+        ._name_start = @intCast(name_start),
+        ._name_len = @intCast(node.name.len),
+        ._parent = node.parent._index + 1,
+        .total_size = 0,
+    };
+    const node_index: u32 = @intCast(self._nodes.items.len);
 
-        var parent: *DirEntry = &self._nodes.items[index];
-        const prev_first = parent.first_child;
-        parent.first_child = node_id;
-        tree_node.next_node = prev_first;
+    var parent: *DirEntry = &self._nodes.items[node.parent._index];
+    const prev_first = parent._first_child;
+    parent._first_child = node_index + 1;
+    tree_node._next_node = prev_first;
 
-        try self._nodes.append(allocator, tree_node);
+    try self._nodes.append(allocator, tree_node);
 
-        return node_id;
-    } else {
-        return error.ParentRequired;
-    }
+    return .{ ._index = node_index };
 }
 
 pub fn getNode(self: Tree, id: EntryId) ?DirEntry {
-    if (id.asIndex()) |index| {
-        if (index < self._nodes.items.len) {
-            return self._nodes.items[index];
-        }
+    if (id._index < self._nodes.items.len) {
+        return self._nodes.items[id._index];
     }
     return null;
 }
@@ -134,7 +132,7 @@ pub fn computeFullPath(
             total_path_size += 1;
         }
         total_path_size += node._name_len;
-        current = node.parent;
+        current = node.parent() orelse break;
     }
     path_buf.clearRetainingCapacity();
     try path_buf.ensureTotalCapacity(allocator, total_path_size);

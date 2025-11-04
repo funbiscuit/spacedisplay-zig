@@ -60,7 +60,7 @@ pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !Sca
     };
 
     if (self._state._tree.getNode(dir_id)) |n| {
-        if (n.parent.isSome()) {
+        if (n.parent() != null) {
             stats.current_dir_size = @intCast(n.total_size);
         }
     }
@@ -76,14 +76,14 @@ pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !Sca
     return stats;
 }
 
-pub fn getParentId(self: *Scanner, element_id: Tree.EntryId) Tree.EntryId {
+pub fn getParentId(self: *Scanner, element_id: Tree.EntryId) ?Tree.EntryId {
     self._state._mutex.lock();
     defer self._state._mutex.unlock();
 
     if (self._state._tree.getNode(element_id)) |elem| {
-        return elem.parent;
+        return elem.parent();
     }
-    return .none;
+    return null;
 }
 
 pub fn isScanning(self: Scanner) bool {
@@ -107,21 +107,23 @@ pub fn getEntryPath(self: *Scanner, allocator: Allocator, entry: Tree.EntryId) !
     return try path_buf.toOwnedSlice(allocator);
 }
 
-pub fn getScannedChildId(self: *Scanner, parent: Tree.EntryId) Tree.EntryId {
-    if (parent.isNone()) {
-        return .none;
+pub fn getScannedChildId(self: *Scanner, parent: Tree.EntryId) ?Tree.EntryId {
+    if (!self._state._is_scanning.load(.seq_cst)) {
+        return null;
     }
     var scanned_id = self._state.currently_scanned_id.load(.seq_cst);
 
     self._state._mutex.lock();
     defer self._state._mutex.unlock();
     while (self._state._tree.getNode(scanned_id)) |scanned| {
-        if (scanned.parent.eql(parent)) {
-            return scanned_id;
-        }
-        scanned_id = scanned.parent;
+        if (scanned.parent()) |scanned_parent| {
+            if (scanned_parent.eql(parent)) {
+                return scanned_id;
+            }
+            scanned_id = scanned_parent;
+        } else break;
     }
-    return .none;
+    return null;
 }
 
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
@@ -145,9 +147,9 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
         defer self._state._mutex.unlock();
 
         if (self._state._tree.getNode(dir_id)) |root| {
-            if (root.parent.isSome()) {
+            if (root.parent()) |parent| {
                 try root_children.append(allocator, .{
-                    .id = root.parent,
+                    .id = parent,
                     .name = try allocator.dupe(u8, ".."),
                     .size = 0,
                     .kind = .parent,
@@ -161,16 +163,19 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
                 });
             }
 
-            var current = root.first_child;
-            while (self._state._tree.getNode(current)) |entry| {
-                try root_children.append(allocator, .{
-                    .id = current,
-                    .name = try allocator.dupe(u8, self._state._tree.getNodeName(entry)),
-                    .size = if (entry.total_size >= 0) @intCast(entry.total_size) else 0,
-                    .kind = .directory,
-                });
+            if (root.firstChild()) |first| {
+                var current = first;
 
-                current = entry.next_node;
+                while (self._state._tree.getNode(current)) |entry| {
+                    try root_children.append(allocator, .{
+                        .id = current,
+                        .name = try allocator.dupe(u8, self._state._tree.getNodeName(entry)),
+                        .size = if (entry.total_size >= 0) @intCast(entry.total_size) else 0,
+                        .kind = .directory,
+                    });
+
+                    current = entry.nextNode() orelse break;
+                }
             }
         }
 
@@ -191,7 +196,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
         switch (entry.kind) {
             .file => {
                 try root_children.append(allocator, .{
-                    .id = .none,
+                    .id = null,
                     .name = try allocator.dupe(u8, entry.name),
                     .size = entry.size,
                     .kind = .file,
@@ -205,7 +210,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
 }
 
 pub const ListDirEntry = struct {
-    id: Tree.EntryId,
+    id: ?Tree.EntryId,
     name: []const u8,
     size: u64,
     kind: Kind,
@@ -253,7 +258,7 @@ const CommonState = struct {
             .total_dirs = .init(0),
             .total_files = .init(0),
             .scanned_size = .init(0),
-            .currently_scanned_id = .init(.none),
+            .currently_scanned_id = .init(.root),
         };
     }
 
@@ -289,8 +294,6 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
 
     var path_id_buf = std.ArrayList(Tree.EntryId).empty;
     defer path_id_buf.deinit(allocator);
-
-    defer state.currently_scanned_id.store(.none, .seq_cst);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
