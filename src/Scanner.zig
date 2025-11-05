@@ -235,7 +235,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
         std.log.info("rescanning {s}", .{dir_path});
         self._state.user_scan_queue.putBack(.{
             .id = dir_id,
-            .recursive = false,
+            .rescan_existing = false,
         }) catch {};
     }
 
@@ -283,7 +283,7 @@ const CommonState = struct {
 
     const QueueItem = struct {
         id: Tree.EntryId,
-        recursive: bool,
+        rescan_existing: bool,
     };
 
     fn init(allocator: Allocator, scanned_path: []const u8) !CommonState {
@@ -321,7 +321,7 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
     defer scan_queue.deinit(allocator);
     try scan_queue.append(allocator, .{
         .id = .root,
-        .recursive = true,
+        .rescan_existing = false,
     });
 
     var next_print: u32 = 0;
@@ -402,14 +402,14 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
         for (set_children_result.new_dirs) |dir_id| {
             try scan_queue.append(allocator, .{
                 .id = dir_id,
-                .recursive = true,
+                .rescan_existing = false,
             });
         }
-        if (item.recursive) {
+        if (item.rescan_existing) {
             for (set_children_result.existing_dirs) |dir_id| {
                 try scan_queue.append(allocator, .{
                     .id = dir_id,
-                    .recursive = true,
+                    .rescan_existing = true,
                 });
             }
         }
