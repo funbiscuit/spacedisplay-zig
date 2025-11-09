@@ -145,6 +145,8 @@ pub fn setChildren(
                 }
                 if (current_existing_entry.nextNode()) |next_id| {
                     cursor_existing_id = self._nodes.items[next_id._index].nextNode();
+                } else {
+                    cursor_existing_id = null;
                 }
                 removed_ids += 1;
             } else {
@@ -181,6 +183,8 @@ pub fn setChildren(
             }
             if (current_existing_entry.nextNode()) |next_id| {
                 cursor_existing_id = self.getNode(next_id).nextNode();
+            } else {
+                cursor_existing_id = null;
             }
             removed_ids += 1;
         } else break;
