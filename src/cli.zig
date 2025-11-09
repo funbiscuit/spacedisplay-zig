@@ -5,6 +5,7 @@ const vxfw = vaxis.vxfw;
 const Scanner = @import("Scanner.zig");
 const AppView = @import("ui/AppView.zig");
 const main = @import("main.zig");
+const build_info = @import("build_info");
 
 const Allocator = std.mem.Allocator;
 
@@ -12,6 +13,7 @@ pub fn run(allocator: Allocator) !u8 {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\--no-ui                Run without UI. Performs scan of specified path and prints results
+        \\-V, --version          Print version information and quit
         \\<str>                  Path to scan.
         \\
     );
@@ -28,6 +30,11 @@ pub fn run(allocator: Allocator) !u8 {
 
     if (res.args.help != 0) {
         try clap.helpToFile(.stdout(), clap.Help, &params, .{});
+        return 0;
+    }
+
+    if (res.args.version != 0) {
+        try printVersion(.stdout());
         return 0;
     }
 
@@ -73,4 +80,12 @@ fn run_without_ui(allocator: Allocator, scanned_path: []const u8) !void {
     while (scanner.isScanning()) {
         std.Thread.sleep(100_000);
     }
+}
+
+fn printVersion(file: std.fs.File) !void {
+    var buf: [1024]u8 = undefined;
+    var writer = file.writer(&buf);
+
+    try writer.interface.print("{s} {s}\n", .{ @tagName(build_info.name), build_info.version });
+    return writer.interface.flush();
 }

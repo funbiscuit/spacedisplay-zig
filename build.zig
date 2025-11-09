@@ -15,6 +15,9 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    exe.root_module.addAnonymousImport("build_info", .{
+        .root_source_file = b.path("build.zig.zon"),
+    });
 
     b.installArtifact(exe);
 

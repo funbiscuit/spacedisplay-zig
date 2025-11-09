@@ -1,6 +1,6 @@
 .{
     .name = .spacedisplay,
-    .version = "0.1.1",
+    .version = "0.1.1-SNAPSHOT",
     .fingerprint = 0x845e16b5af741137, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
