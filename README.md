@@ -1,6 +1,6 @@
 # spacedisplay-zig
 
-Fast and lightweight terminal app to scan and analyze used disk space written in Zig. 
+Fast and lightweight terminal app to scan and analyze used disk space written in Zig.
 
 Previous implementation in Rust can be found [here](https://github.com/funbiscuit/spacedisplay-rs).
 
@@ -9,11 +9,17 @@ Previous implementation in Rust can be found [here](https://github.com/funbiscui
 ## Features
 
 * Fast scanning and low memory footprint (~6MiB per 100k directories, number of files doesn't matter)
+* Detects changes in opened directory
 * Terminal UI that allows to use it through SSH
 * Full mouse support (if terminal supports it)
 * Small (~0.5MB on Linux with debug-info stripped), static binary without extra dependencies
 
 ## Installation
+
+### GitHub Releases
+
+Check out [GitHub Releases](https://github.com/funbiscuit/spacedisplay-zig/releases) for
+the [latest](https://github.com/funbiscuit/spacedisplay-zig/releases/latest) build.
 
 ### From source
 
@@ -37,13 +43,13 @@ spacedisplay ~
 
 Keyboard controls:
 
-|         Key          | Action                                                     |
-|:--------------------:|------------------------------------------------------------|
-|        Ctrl+C        | Quit                                                       |
-|       Home/End       | Jump to first/last file/dir                                |
-|       Up/Down        | Move up and down inside files list                         |
-|     Enter, Right     | Open selected directory                                    |
-| Esc, Backspace, Left | Go to the parent directory                                 |
+|         Key          | Action                             |
+|:--------------------:|------------------------------------|
+|        Ctrl+C        | Quit                               |
+|       Home/End       | Jump to first/last file/dir        |
+|       Up/Down        | Move up and down inside files list |
+|     Enter, Right     | Open selected directory            |
+| Esc, Backspace, Left | Go to the parent directory         |
 
 If your terminal supports it, you can also move around with your mouse.
 
