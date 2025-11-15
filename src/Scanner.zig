@@ -255,7 +255,7 @@ pub const ListDirEntry = struct {
     };
 
     fn lessThan(_: void, a: ListDirEntry, b: ListDirEntry) bool {
-        if (a.kind == .parent) {
+        if (a.kind == .parent and b.kind != .parent) {
             return true;
         } else if (b.kind == .parent) {
             return false;
