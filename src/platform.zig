@@ -19,6 +19,27 @@ pub const MountStats = struct {
     is_mount_point: bool,
 };
 
+pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
+    const parent_pathz = try allocator.dupeZ(u8, parent_path);
+    defer allocator.free(parent_pathz);
+
+    const child_path = std.fs.path.resolve(
+        allocator,
+        &[_][]const u8{ parent_path, child },
+    ) catch return false;
+    defer allocator.free(child_path);
+
+    const child_pathz = try allocator.dupeZ(u8, child_path);
+    defer allocator.free(child_pathz);
+
+    if (statPath(child_pathz)) |stat1| {
+        if (statPath(parent_pathz)) |stat2| {
+            return stat1.dev == stat2.dev;
+        }
+    }
+    return false;
+}
+
 pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?MountStats {
     const abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,

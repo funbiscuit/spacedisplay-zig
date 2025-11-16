@@ -211,7 +211,15 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: Tree.EntryId) !std.
                         break;
                     }
                 } else {
-                    need_rescan = true;
+                    try root_children.append(allocator, .{
+                        .id = null,
+                        .name = try allocator.dupe(u8, entry.name),
+                        .size = 0,
+                        .kind = .directory,
+                    });
+                    if (entry.can_scan) {
+                        need_rescan = true;
+                    }
                 }
             },
             .file => {
@@ -366,13 +374,17 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
 
         var dir_names = std.ArrayList([]const u8).empty;
         var files_size: u64 = 0;
+        var files_count: u32 = 0;
         for (entries) |entry| {
             switch (entry.kind) {
                 .directory => {
-                    try dir_names.append(arena.allocator(), entry.name);
+                    if (entry.can_scan) {
+                        try dir_names.append(arena.allocator(), entry.name);
+                    }
                 },
                 .file => {
                     files_size += entry.size;
+                    files_count += 1;
                 },
             }
         }
@@ -393,7 +405,7 @@ fn workerFuncErr(state: *CommonState, allocator: Allocator) !void {
                 item.id,
                 dir_names.items,
                 files_size,
-                @intCast(entries.len - dir_names.items.len),
+                files_count,
             );
             const new_root = state._tree.getNode(item.id);
             size_delta += new_root.total_size;
@@ -454,6 +466,7 @@ const DirElement = struct {
     name: []const u8,
     size: u64,
     kind: Kind,
+    can_scan: bool = false,
 
     pub const Kind = enum {
         directory,
@@ -475,10 +488,12 @@ fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]DirElement {
         const name = try arena.dupe(u8, entry.name);
         switch (entry.kind) {
             .directory => {
+                const can_scan = try platform.canScan(arena, dir_path, name);
                 try entries.append(arena, .{
                     .name = name,
                     .size = 0,
                     .kind = .directory,
+                    .can_scan = can_scan,
                 });
             },
             .file => {
