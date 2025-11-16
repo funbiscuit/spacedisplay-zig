@@ -237,7 +237,7 @@ pub fn computeFullPath(
     for (0..id_buf.items.len) |idx| {
         const node = self.getNode(id_buf.items[id_buf.items.len - idx - 1]);
         const elem_name = self._strings.get(node._name_start, node._name_len);
-        if (idx > 0) {
+        if (idx > 0 and path_buf.items[path_buf.items.len - 1] != '/') {
             path_buf.appendAssumeCapacity('/');
         }
         path_buf.appendSliceAssumeCapacity(elem_name);
