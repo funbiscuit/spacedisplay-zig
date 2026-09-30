@@ -4,6 +4,7 @@
 /build
 .zig-cache
 zig-out
+/zig-pkg
 *.log
 /.zcode
 /.worktrees
