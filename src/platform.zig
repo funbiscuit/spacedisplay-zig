@@ -1,23 +1,11 @@
 const std = @import("std");
 const c = std.c;
 const posix = @import("platform/posix.zig");
+const ScanEngine = @import("core/ScanEngine.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const MountStats = struct {
-    /// Total size of partition
-    total: u64,
-
-    /// Available space on partition
-    available: u64,
-
-    /// Reserved space for root
-    reserved: u64,
-
-    /// Whether info was requested for mount point (true)
-    /// or for some directory inside mount point
-    is_mount_point: bool,
-};
+pub const MountStats = ScanEngine.MountStats;
 
 pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
     const parent_pathz = try allocator.dupeZ(u8, parent_path);

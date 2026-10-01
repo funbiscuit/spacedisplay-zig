@@ -2,7 +2,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
-const Scanner = @import("../runtime/Scanner.zig");
+const ScanEngine = @import("../core/ScanEngine.zig");
 
 const FilesView = @import("FilesView.zig");
 const utils = @import("utils.zig");
@@ -10,7 +10,7 @@ const utils = @import("utils.zig");
 const Allocator = std.mem.Allocator;
 const ProgressBar = @This();
 
-stats: Scanner.ScanStats,
+stats: ScanEngine.ScanStats,
 
 pub fn widget(self: *const ProgressBar) vxfw.Widget {
     return .{
@@ -139,7 +139,7 @@ fn makeLayout(items: []BarItem, width: u16) void {
     }
 }
 
-fn createBars(arena: Allocator, stats: Scanner.ScanStats) ![]BarItem {
+fn createBars(arena: Allocator, stats: ScanEngine.ScanStats) ![]BarItem {
     var scanned_dir_str: []const u8 = "";
     var scanned_dir_weight: f64 = 0;
     var remaining_str: []const u8 = "";

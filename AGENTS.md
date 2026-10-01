@@ -22,8 +22,8 @@ src/
   cli.zig         argument parsing, app startup
   logging.zig     stderr logging with allow_log kill switch
   platform.zig    mount stats / can-scan queries (statvfs, stat)
-  core.zig        namespace for the data structures in core/
-  core/           pure data structures (no vaxis, threads, or filesystem)
+  core.zig        namespace for the pure logic and data in core/
+  core/           pure logic and data (no vaxis, threads, or filesystem)
   runtime.zig     namespace for the drivers in runtime/
   runtime/        threaded, filesystem-backed drivers of core state machines
   ui.zig          namespace for the widgets in ui/

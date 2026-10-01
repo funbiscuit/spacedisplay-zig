@@ -5,6 +5,7 @@ const std = @import("std");
 pub const Tree = @import("core/Tree.zig");
 pub const StringPool = @import("core/StringPool.zig");
 pub const queue = @import("core/queue.zig");
+pub const ScanEngine = @import("core/ScanEngine.zig");
 
 test {
     std.testing.refAllDecls(@This());
