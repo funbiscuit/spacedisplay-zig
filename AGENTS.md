@@ -21,10 +21,11 @@ src/
   lib.zig         library root re-exporting the public API (owns the third-party imports)
   cli.zig         argument parsing, app startup
   logging.zig     stderr logging with allow_log kill switch
-  Scanner.zig     background scanner (worker thread + tree state)
   platform.zig    mount stats / can-scan queries (statvfs, stat)
   core.zig        namespace for the data structures in core/
   core/           pure data structures (no vaxis, threads, or filesystem)
+  runtime.zig     namespace for the drivers in runtime/
+  runtime/        threaded, filesystem-backed drivers of core state machines
   ui.zig          namespace for the widgets in ui/
   ui/             vaxis vxfw widgets (AppView, FilesView, ProgressBar)
 tests/            end-to-end tests (UI, CLI) against the public API only

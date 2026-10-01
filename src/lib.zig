@@ -2,8 +2,8 @@
 
 const std = @import("std");
 
-pub const Scanner = @import("Scanner.zig");
 pub const core = @import("core.zig");
+pub const runtime = @import("runtime.zig");
 pub const platform = @import("platform.zig");
 pub const cli = @import("cli.zig");
 pub const logging = @import("logging.zig");

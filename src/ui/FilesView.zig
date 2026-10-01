@@ -2,7 +2,7 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
-const Scanner = @import("../Scanner.zig");
+const Scanner = @import("../runtime/Scanner.zig");
 const Tree = @import("../core/Tree.zig");
 const utils = @import("utils.zig");
 
