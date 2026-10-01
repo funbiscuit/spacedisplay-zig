@@ -1,0 +1,12 @@
+   .
+ > big                            0.98 KiB                            ▍
+   sub                             300 B   ⠹        ▊
+   root.txt                         40 B
+
+
+
+
+
+
+
+

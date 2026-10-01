@@ -43,6 +43,10 @@ tests/            end-to-end tests (UI, CLI) against the public API only
   own `test { std.testing.refAllDecls(@This()); }` block: test collection
   follows references one level deep, and without the block the tests of the
   files it imports are silently skipped.
+- UI golden snapshots come in pairs — `<name>.txt` pins layout and content,
+  `<name>.ansi` pins styles (SGR escapes; review with `cat` or
+  `scripts/gallery.sh [name]`). Goldens are grouped in subdirectories by
+  widget; regenerate with `UPDATE_SNAPSHOTS=1 zig build test`.
 
 ## Invariants
 

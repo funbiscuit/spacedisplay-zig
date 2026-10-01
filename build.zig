@@ -55,6 +55,12 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     tests_mod.addImport("spacedisplay", lib_mod);
+    // the UI harness constructs vaxis Screen/Window and input events directly
+    tests_mod.addImport("vaxis", vaxis_mod);
+
+    const test_options = b.addOptions();
+    test_options.addOption([]const u8, "snapshot_dir", b.pathFromRoot("tests/snapshots"));
+    tests_mod.addImport("test_options", test_options.createModule());
 
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const e2e_tests = b.addTest(.{ .root_module = tests_mod });
