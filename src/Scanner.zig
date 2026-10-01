@@ -1,7 +1,7 @@
 const std = @import("std");
 const platform = @import("platform.zig");
-const Tree = @import("Tree.zig");
-const queue = @import("queue.zig");
+const Tree = @import("core/Tree.zig");
+const queue = @import("core/queue.zig");
 
 const Allocator = std.mem.Allocator;
 const Mutex = std.Thread.Mutex;

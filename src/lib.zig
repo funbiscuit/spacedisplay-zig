@@ -3,9 +3,7 @@
 const std = @import("std");
 
 pub const Scanner = @import("Scanner.zig");
-pub const Tree = @import("Tree.zig");
-pub const StringPool = @import("StringPool.zig");
-pub const queue = @import("queue.zig");
+pub const core = @import("core.zig");
 pub const platform = @import("platform.zig");
 pub const cli = @import("cli.zig");
 pub const logging = @import("logging.zig");

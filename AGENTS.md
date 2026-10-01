@@ -22,10 +22,9 @@ src/
   cli.zig         argument parsing, app startup
   logging.zig     stderr logging with allow_log kill switch
   Scanner.zig     background scanner (worker thread + tree state)
-  Tree.zig        scanned directory tree (pure data structure)
-  StringPool.zig  string interning for tree node names
-  queue.zig       thread-safe bounded LIFO queue
   platform.zig    mount stats / can-scan queries (statvfs, stat)
+  core.zig        namespace for the data structures in core/
+  core/           pure data structures (no vaxis, threads, or filesystem)
   ui.zig          namespace for the widgets in ui/
   ui/             vaxis vxfw widgets (AppView, FilesView, ProgressBar)
 tests/            end-to-end tests (UI, CLI) against the public API only

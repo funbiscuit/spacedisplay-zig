@@ -3,7 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
 const Scanner = @import("../Scanner.zig");
-const Tree = @import("../Tree.zig");
+const Tree = @import("../core/Tree.zig");
 const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;
