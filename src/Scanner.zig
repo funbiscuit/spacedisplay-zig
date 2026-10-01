@@ -515,3 +515,115 @@ fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]DirElement {
 
     return entries.items;
 }
+
+fn waitIdle(scanner: *Scanner, timeout_ms: u64) !void {
+    var waited: u64 = 0;
+    while (scanner.isScanning()) {
+        if (waited >= timeout_ms) return error.ScanTimeout;
+        std.Thread.sleep(std.time.ns_per_ms);
+        waited += 1;
+    }
+}
+
+fn writeFixtureFile(dir: std.fs.Dir, sub_path: []const u8, size: usize) !void {
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.makePath(parent);
+    var f = try dir.createFile(sub_path, .{});
+    defer f.close();
+    var buf = [_]u8{0} ** 4096;
+    var left = size;
+    while (left > 0) {
+        const n = @min(left, buf.len);
+        try f.writeAll(buf[0..n]);
+        left -= n;
+    }
+}
+
+// Fixture used by the tests below
+//TODO not really a unit test, refactor later into e2e test
+const Fixture = struct {
+    tmp: std.testing.TmpDir,
+    scanner: Scanner,
+
+    fn create() !Fixture {
+        const gpa = std.testing.allocator;
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        try writeFixtureFile(tmp.dir, "root50.bin", 50);
+        try writeFixtureFile(tmp.dir, "a/one.bin", 100);
+        try writeFixtureFile(tmp.dir, "a/b/two.bin", 200);
+
+        const path = try tmp.dir.realpathAlloc(gpa, ".");
+        defer gpa.free(path);
+        const scanner = try Scanner.init(gpa, path);
+        return .{ .tmp = tmp, .scanner = scanner };
+    }
+
+    fn destroy(self: *Fixture) !void {
+        self.scanner.deinit(std.testing.allocator);
+        self.tmp.cleanup();
+    }
+};
+
+test "Scanner scans a fixture and reports totals" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try waitIdle(&fixture.scanner, 10_000);
+
+    const stats = try fixture.scanner.getStats(std.testing.allocator, .root);
+    try std.testing.expectEqual(@as(u32, 3), stats.total_files);
+    try std.testing.expectEqual(@as(u32, 2), stats.total_dirs);
+    try std.testing.expectEqual(@as(u64, 350), stats.scanned_size);
+    try std.testing.expectEqual(@as(u64, 350), stats.current_dir_size);
+}
+
+test "Scanner reports subdirectory stats" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try waitIdle(&fixture.scanner, 10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    const a_id = for (entries.items) |entry| {
+        if (entry.kind == .directory and std.mem.eql(u8, entry.name, "a")) break entry.id.?;
+    } else return error.MissingDir;
+
+    const stats = try fixture.scanner.getStats(std.testing.allocator, a_id);
+    try std.testing.expectEqual(@as(u64, 300), stats.current_dir_size);
+}
+
+test "Scanner listDir merges tree with disk state" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try waitIdle(&fixture.scanner, 10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+
+    // parent first, then sorted by size: a/ (300 B), root50.bin (50 B);
+    // at root the parent entry is named "." instead of ".."
+    try std.testing.expectEqual(@as(usize, 3), entries.items.len);
+    try std.testing.expectEqualStrings(".", entries.items[0].name);
+    try std.testing.expectEqualStrings("a", entries.items[1].name);
+    try std.testing.expectEqual(@as(u64, 300), entries.items[1].size);
+    try std.testing.expect(entries.items[1].id != null);
+    try std.testing.expectEqualStrings("root50.bin", entries.items[2].name);
+    try std.testing.expectEqual(@as(u64, 50), entries.items[2].size);
+
+    // tree ids let the UI navigate without touching the filesystem again
+    const a_id = entries.items[1].id.?;
+    try std.testing.expect(fixture.scanner.getParentId(a_id).?.eql(.root));
+
+    var a_entries = try fixture.scanner.listDir(std.testing.allocator, a_id);
+    defer Scanner.deinitListDir(std.testing.allocator, &a_entries);
+    try std.testing.expectEqual(@as(usize, 3), a_entries.items.len);
+    try std.testing.expectEqualStrings("..", a_entries.items[0].name);
+    try std.testing.expectEqualStrings("b", a_entries.items[1].name);
+    try std.testing.expectEqual(@as(u64, 200), a_entries.items[1].size);
+    try std.testing.expectEqualStrings("one.bin", a_entries.items[2].name);
+}
+
+test "Scanner deinit stops a running scan" {
+    var fixture = try Fixture.create();
+    // no waitIdle: deinit must join the worker thread promptly from any state
+    try fixture.destroy();
+}
