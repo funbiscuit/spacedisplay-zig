@@ -64,9 +64,12 @@ pub fn run(allocator: Allocator) !u8 {
     var app = try vxfw.App.init(allocator);
     defer app.deinit();
 
-    const window = try allocator.create(AppView);
+    var scanner = try Scanner.init(allocator, scanned_path);
+    defer scanner.deinit(allocator);
+
+    const window = try allocator.create(AppView(Scanner));
     defer allocator.destroy(window);
-    window.* = try AppView.init(allocator, scanned_path);
+    window.* = try AppView(Scanner).init(allocator, &scanner);
     defer window.deinit();
 
     try app.run(window.widget(), .{});

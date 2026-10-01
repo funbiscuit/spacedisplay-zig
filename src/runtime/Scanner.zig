@@ -58,6 +58,12 @@ pub fn getScannedChildId(self: *Scanner, parent: EntryId) ?EntryId {
     return self._engine.getScannedChildId(parent);
 }
 
+/// Wall clock for the UI (spinner animation, update throttling).
+pub fn nowMs(self: *Scanner) i64 {
+    _ = self;
+    return std.time.milliTimestamp();
+}
+
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
     ScanEngine.deinitListDir(allocator, entries);
 }
