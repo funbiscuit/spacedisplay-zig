@@ -143,11 +143,7 @@ pub fn setChildren(
                 } else {
                     self._nodes.items[parent_id._index]._first_child = current_existing_entry._next_node;
                 }
-                if (current_existing_entry.nextNode()) |next_id| {
-                    cursor_existing_id = self._nodes.items[next_id._index].nextNode();
-                } else {
-                    cursor_existing_id = null;
-                }
+                cursor_existing_id = current_existing_entry.nextNode();
                 removed_ids += 1;
             } else {
                 // entry is kept as is
@@ -181,11 +177,7 @@ pub fn setChildren(
             } else {
                 self._nodes.items[parent_id._index]._first_child = current_existing_entry._next_node;
             }
-            if (current_existing_entry.nextNode()) |next_id| {
-                cursor_existing_id = self.getNode(next_id).nextNode();
-            } else {
-                cursor_existing_id = null;
-            }
+            cursor_existing_id = current_existing_entry.nextNode();
             removed_ids += 1;
         } else break;
     }
@@ -308,17 +300,11 @@ test "setChildren merges incrementally: keeps, adds and removes" {
     var update = [_][]const u8{ "b", "c" };
     const res = try tree.setChildren(gpa, arena.allocator(), .root, &update, 60, 1);
 
-    // BUG: removing "a" advances the cursor one node too far, so the existing
-    // "b" is dropped from the chain and recreated as a fresh node instead of
-    // being reported in existing_dirs. Fixed behavior would be:
-    //   new_dirs == [c], existing_dirs == [b_id], removed == 1.
-    try std.testing.expectEqual(@as(usize, 2), res.new_dirs.len);
-    try std.testing.expectEqualStrings("c", tree.getNodeName(tree.getNode(res.new_dirs[1])));
-    try std.testing.expectEqual(@as(usize, 0), res.existing_dirs.len);
+    try std.testing.expectEqual(@as(usize, 1), res.new_dirs.len);
+    try std.testing.expectEqualStrings("c", tree.getNodeName(tree.getNode(res.new_dirs[0])));
+    try std.testing.expectEqual(@as(usize, 1), res.existing_dirs.len);
+    try std.testing.expect(res.existing_dirs[0].eql(b_id));
     try std.testing.expectEqual(@as(u32, 1), res.removed_dirs);
-
-    // the recreated node has a different id than the original "b"
-    try std.testing.expect(!res.new_dirs[0].eql(b_id));
 
     // root now links only b -> c
     const first = tree.getNode(.root).firstChild().?;
