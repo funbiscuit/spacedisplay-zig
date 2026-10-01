@@ -4,7 +4,7 @@ const vxfw = vaxis.vxfw;
 
 const ScanEngine = @import("../core/ScanEngine.zig");
 
-const FilesView = @import("FilesView.zig");
+const FilesView = @import("files_view.zig").FilesView;
 const utils = @import("utils.zig");
 
 const Allocator = std.mem.Allocator;

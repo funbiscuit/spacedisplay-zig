@@ -2,8 +2,8 @@
 
 const std = @import("std");
 
-pub const AppView = @import("ui/AppView.zig");
-pub const FilesView = @import("ui/FilesView.zig");
+pub const AppView = @import("ui/app_view.zig").AppView;
+pub const FilesView = @import("ui/files_view.zig").FilesView;
 pub const ProgressBar = @import("ui/ProgressBar.zig");
 pub const utils = @import("ui/utils.zig");
 

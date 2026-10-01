@@ -3,7 +3,7 @@ const clap = @import("clap");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const Scanner = @import("runtime/Scanner.zig");
-const AppView = @import("ui/AppView.zig");
+const AppView = @import("ui/app_view.zig").AppView;
 const logging = @import("logging.zig");
 const build_info = @import("build_info");
 
