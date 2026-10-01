@@ -190,3 +190,58 @@ fn createBars(arena: Allocator, stats: Scanner.ScanStats) ![]BarItem {
     }
     return children.items;
 }
+
+test "makeLayout splits width proportionally to weights" {
+    var items = [_]BarItem{
+        .{ .label = "1 GiB", .weight = 1 },
+        .{ .label = "1 GiB", .weight = 1 },
+    };
+    makeLayout(&items, 20);
+    try std.testing.expectEqual(@as(?u16, 10), items[0].width);
+    try std.testing.expectEqual(@as(?u16, 10), items[1].width);
+}
+
+test "makeLayout respects weight ratios" {
+    var items = [_]BarItem{
+        .{ .label = "1", .weight = 1 },
+        .{ .label = "3", .weight = 3 },
+    };
+    makeLayout(&items, 20);
+    try std.testing.expectEqual(@as(?u16, 5), items[0].width);
+    try std.testing.expectEqual(@as(?u16, 15), items[1].width);
+}
+
+test "makeLayout gives single item the full width" {
+    var items = [_]BarItem{
+        .{ .label = "100 GiB", .weight = 1 },
+    };
+    makeLayout(&items, 40);
+    try std.testing.expectEqual(@as(?u16, 40), items[0].width);
+}
+
+test "makeLayout keeps items at least label-sized when space is tight" {
+    var items = [_]BarItem{
+        .{ .label = "12 KiB", .weight = 1 },
+        .{ .label = "1.0 GiB", .weight = 1 },
+    };
+    makeLayout(&items, 10);
+    // width can exceed the requested total when labels don't fit
+    try std.testing.expectEqual(@as(?u16, 8), items[0].width);
+    try std.testing.expectEqual(@as(?u16, 9), items[1].width);
+}
+
+test "makeLayout shrinks oversized items to fit the width" {
+    var items = [_]BarItem{
+        .{ .label = "10", .weight = 1 },
+        .{ .label = "20", .weight = 1 },
+        .{ .label = "30", .weight = 10 },
+    };
+    makeLayout(&items, 30);
+    try std.testing.expectEqual(@as(?u16, 4), items[0].width);
+    try std.testing.expectEqual(@as(?u16, 4), items[1].width);
+    try std.testing.expectEqual(@as(?u16, 22), items[2].width);
+
+    var total: u16 = 0;
+    for (items) |item| total += item.width.?;
+    try std.testing.expectEqual(@as(u16, 30), total);
+}

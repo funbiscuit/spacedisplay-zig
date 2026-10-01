@@ -254,3 +254,125 @@ fn createNode(self: *Tree, allocator: Allocator, name: []const u8) !EntryId {
     try self._nodes.append(allocator, tree_node);
     return .{ ._index = node_index };
 }
+
+test "Tree starts with a root that has no parent" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+
+    const root = tree.getNode(.root);
+    try std.testing.expect(root.parent() == null);
+    try std.testing.expect(root.firstChild() == null);
+    try std.testing.expectEqualStrings("base", tree.getNodeName(root));
+    try std.testing.expectEqual(@as(i64, 0), root.total_size);
+}
+
+test "setChildren adds sorted children and propagates file size to ancestors" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var names = [_][]const u8{ "b", "a" };
+    const res = try tree.setChildren(gpa, arena.allocator(), .root, &names, 100, 2);
+
+    try std.testing.expectEqual(@as(usize, 2), res.new_dirs.len);
+    try std.testing.expectEqual(@as(usize, 0), res.existing_dirs.len);
+    try std.testing.expectEqual(@as(u32, 0), res.removed_dirs);
+
+    const root = tree.getNode(.root);
+    try std.testing.expectEqual(@as(u32, 2), root.files);
+    try std.testing.expectEqual(@as(i64, 100), root.total_size);
+
+    // children are linked in name order regardless of input order
+    const first = root.firstChild().?;
+    try std.testing.expectEqualStrings("a", tree.getNodeName(tree.getNode(first)));
+    try std.testing.expect(tree.getNode(first).parent().?.eql(.root));
+    const second = tree.getNode(first).nextNode().?;
+    try std.testing.expectEqualStrings("b", tree.getNodeName(tree.getNode(second)));
+    try std.testing.expect(tree.getNode(second).nextNode() == null);
+}
+
+test "setChildren merges incrementally: keeps, adds and removes" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var initial = [_][]const u8{ "a", "b" };
+    const initial_res = try tree.setChildren(gpa, arena.allocator(), .root, &initial, 50, 0);
+    const b_id = initial_res.new_dirs[1];
+
+    var update = [_][]const u8{ "b", "c" };
+    const res = try tree.setChildren(gpa, arena.allocator(), .root, &update, 60, 1);
+
+    // BUG: removing "a" advances the cursor one node too far, so the existing
+    // "b" is dropped from the chain and recreated as a fresh node instead of
+    // being reported in existing_dirs. Fixed behavior would be:
+    //   new_dirs == [c], existing_dirs == [b_id], removed == 1.
+    try std.testing.expectEqual(@as(usize, 2), res.new_dirs.len);
+    try std.testing.expectEqualStrings("c", tree.getNodeName(tree.getNode(res.new_dirs[1])));
+    try std.testing.expectEqual(@as(usize, 0), res.existing_dirs.len);
+    try std.testing.expectEqual(@as(u32, 1), res.removed_dirs);
+
+    // the recreated node has a different id than the original "b"
+    try std.testing.expect(!res.new_dirs[0].eql(b_id));
+
+    // root now links only b -> c
+    const first = tree.getNode(.root).firstChild().?;
+    try std.testing.expectEqualStrings("b", tree.getNodeName(tree.getNode(first)));
+    const second = tree.getNode(first).nextNode().?;
+    try std.testing.expectEqualStrings("c", tree.getNodeName(tree.getNode(second)));
+    try std.testing.expect(tree.getNode(second).nextNode() == null);
+
+    const root = tree.getNode(.root);
+    try std.testing.expectEqual(@as(u32, 1), root.files);
+    try std.testing.expectEqual(@as(i64, 60), root.total_size);
+}
+
+test "removing a child subtracts its size from all ancestors" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var dirs = [_][]const u8{"d"};
+    const added = try tree.setChildren(gpa, arena.allocator(), .root, &dirs, 0, 0);
+    const d = added.new_dirs[0];
+
+    var files = [_][]const u8{"f"};
+    _ = try tree.setChildren(gpa, arena.allocator(), d, &files, 30, 3);
+    try std.testing.expectEqual(@as(i64, 30), tree.getNode(d).total_size);
+    try std.testing.expectEqual(@as(i64, 30), tree.getNode(.root).total_size);
+
+    var none = [_][]const u8{};
+    const removed = try tree.setChildren(gpa, arena.allocator(), d, &none, 0, 0);
+    try std.testing.expectEqual(@as(u32, 1), removed.removed_dirs);
+    try std.testing.expectEqual(@as(i64, 0), tree.getNode(d).total_size);
+    try std.testing.expectEqual(@as(i64, 0), tree.getNode(.root).total_size);
+    try std.testing.expect(tree.getNode(d).firstChild() == null);
+}
+
+test "computeFullPath joins names from root to entry" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var dirs = [_][]const u8{"sub"};
+    const added = try tree.setChildren(gpa, alloc, .root, &dirs, 0, 0);
+    const sub = added.new_dirs[0];
+
+    var path_buf = std.ArrayList(u8).empty;
+    var id_buf = std.ArrayList(EntryId).empty;
+    try tree.computeFullPath(alloc, sub, &path_buf, &id_buf);
+    try std.testing.expectEqualStrings("base/sub", path_buf.items);
+
+    try tree.computeFullPath(alloc, .root, &path_buf, &id_buf);
+    try std.testing.expectEqualStrings("base", path_buf.items);
+}

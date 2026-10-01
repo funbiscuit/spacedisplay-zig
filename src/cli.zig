@@ -4,7 +4,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 const Scanner = @import("Scanner.zig");
 const AppView = @import("ui/AppView.zig");
-const main = @import("main.zig");
+const logging = @import("logging.zig");
 const build_info = @import("build_info");
 
 const Allocator = std.mem.Allocator;
@@ -58,8 +58,8 @@ pub fn run(allocator: Allocator) !u8 {
         return 0;
     }
 
-    main.allow_log.store(false, .seq_cst);
-    defer main.allow_log.store(true, .seq_cst);
+    logging.allow_log.store(false, .seq_cst);
+    defer logging.allow_log.store(true, .seq_cst);
 
     var app = try vxfw.App.init(allocator);
     defer app.deinit();

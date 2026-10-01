@@ -51,3 +51,44 @@ pub fn formatSize(allocator: Allocator, bytes: u64, width: comptime_int) ![]cons
         return try std.fmt.allocPrint(allocator, "{s: >[2]} {s}", .{ num_str, units[unit], width });
     }
 }
+
+test "formatSize picks units and precision" {
+    const gpa = std.testing.allocator;
+    inline for (.{
+        .{ 0, 4, "   0 B  " },
+        .{ 999, 4, " 999 B  " },
+        .{ 1000, 4, "0.98 KiB" },
+        .{ 1024, 4, "   1 KiB" },
+        .{ 5 * 1024 * 1024, 4, "   5 MiB" },
+        .{ 2 * 1024 * 1024 * 1024 * 1024, 4, "   2 TiB" },
+        .{ 2000 * 1024 * 1024 * 1024 * 1024, 4, ">999 TiB" },
+        .{ 5 * 1024 * 1024, 0, "5 MiB" },
+    }) |case| {
+        const got = try formatSize(gpa, case[0], case[1]);
+        defer gpa.free(got);
+        try std.testing.expectEqualStrings(case[2], got);
+    }
+}
+
+test "formatSize strips trailing zeros" {
+    const gpa = std.testing.allocator;
+    const got = try formatSize(gpa, 10 * 1024, 4);
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("  10 KiB", got);
+}
+
+test "nameToUtf8 passes valid text and replaces invalid bytes" {
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { in: []const u8, want: []const u8 }{
+        .{ .in = "abc", .want = "abc" },
+        .{ .in = "héllo", .want = "héllo" },
+        .{ .in = "a\xffb", .want = "a\u{FFFD}b" },
+        .{ .in = "a\xc3", .want = "a\u{FFFD}" },
+        .{ .in = "\xff\xfe", .want = "\u{FFFD}\u{FFFD}" },
+    };
+    for (cases) |case| {
+        const got = try nameToUtf8(gpa, case.in);
+        defer gpa.free(got);
+        try std.testing.expectEqualStrings(case.want, got);
+    }
+}

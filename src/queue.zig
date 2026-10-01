@@ -34,3 +34,17 @@ pub fn Queue(comptime T: type, N: comptime_int) type {
         }
     };
 }
+
+test "Queue is LIFO and bounded" {
+    var q = Queue(u32, 2){};
+
+    try std.testing.expect(q.popBack() == null);
+
+    try q.putBack(1);
+    try q.putBack(2);
+    try std.testing.expectError(error.NoSpace, q.putBack(3));
+
+    try std.testing.expectEqual(@as(?u32, 2), q.popBack());
+    try std.testing.expectEqual(@as(?u32, 1), q.popBack());
+    try std.testing.expect(q.popBack() == null);
+}

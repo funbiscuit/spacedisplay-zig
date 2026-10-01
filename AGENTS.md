@@ -17,14 +17,16 @@ UPDATE_SNAPSHOTS=1 zig build test   # regenerate UI golden snapshots (when they 
 
 ```
 src/
-  main.zig        entry point: allocator, logging, panic handler
-  lib.zig         library root re-exporting the public API (added with the test setup)
+  main.zig        executable entry: allocator, panic handler; depends only on the lib module
+  lib.zig         library root re-exporting the public API (owns the third-party imports)
   cli.zig         argument parsing, app startup
+  logging.zig     stderr logging with allow_log kill switch
   Scanner.zig     background scanner (worker thread + tree state)
   Tree.zig        scanned directory tree (pure data structure)
   StringPool.zig  string interning for tree node names
   queue.zig       thread-safe bounded LIFO queue
   platform.zig    mount stats / can-scan queries (statvfs, stat)
+  ui.zig          namespace for the widgets in ui/
   ui/             vaxis vxfw widgets (AppView, FilesView, ProgressBar)
 tests/            end-to-end tests (UI, CLI) against the public API only
 ```
@@ -37,6 +39,10 @@ tests/            end-to-end tests (UI, CLI) against the public API only
 - **End-to-end tests live in `tests/`** (rooted at `tests/tests.zig`). That
   module sees only the public API re-exported by `src/lib.zig` — never import
   source files from `tests/` by relative path.
+- A namespace grouping several files (e.g. `src/ui.zig` for `ui/`) carries its
+  own `test { std.testing.refAllDecls(@This()); }` block: test collection
+  follows references one level deep, and without the block the tests of the
+  files it imports are silently skipped.
 
 ## Invariants
 

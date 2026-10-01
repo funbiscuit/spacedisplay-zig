@@ -5,33 +5,63 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const strip = b.option(bool, "strip", "strip the binary");
 
-    const exe = b.addExecutable(.{
-        .name = "spacedisplay",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .strip = strip,
-            .link_libc = true,
-        }),
-    });
-    exe.root_module.addAnonymousImport("build_info", .{
-        .root_source_file = b.path("build.zig.zon"),
-    });
-
-    b.installArtifact(exe);
-
     const clap = b.dependency("clap", .{
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("clap", clap.module("clap"));
+    const clap_mod = clap.module("clap");
 
     const vaxis = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addImport("vaxis", vaxis.module("vaxis"));
+    const vaxis_mod = vaxis.module("vaxis");
+
+    // The library: all application code.
+    const lib_mod = b.createModule(.{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lib_mod.addAnonymousImport("build_info", .{
+        .root_source_file = b.path("build.zig.zon"),
+    });
+    lib_mod.addImport("clap", clap_mod);
+    lib_mod.addImport("vaxis", vaxis_mod);
+
+    // The executable: entry point only, all code comes from the library.
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = strip,
+        .link_libc = true,
+    });
+    exe_mod.addImport("spacedisplay", lib_mod);
+
+    const exe = b.addExecutable(.{
+        .name = "spacedisplay",
+        .root_module = exe_mod,
+    });
+
+    b.installArtifact(exe);
+
+    // End-to-end tests, seeing only the public API.
+    const tests_mod = b.createModule(.{
+        .root_source_file = b.path("tests/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    tests_mod.addImport("spacedisplay", lib_mod);
+
+    const lib_tests = b.addTest(.{ .root_module = lib_mod });
+    const e2e_tests = b.addTest(.{ .root_module = tests_mod });
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
+    test_step.dependOn(&b.addRunArtifact(e2e_tests).step);
 
     const run_step = b.step("run", "Run the app");
 
@@ -43,13 +73,4 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_exe_tests.step);
 }
