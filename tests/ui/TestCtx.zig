@@ -27,6 +27,9 @@ pub const TestCtx = struct {
     now_ms: i64 = 0,
     /// When set, reported by getScannedChildId (drives the spinner).
     scanned_child: ?EntryId = null,
+    /// Paths that fail to open in listDir, simulating a directory deleted
+    /// outside the app; listDir reports error.DirMissing for them.
+    missing_paths: []const []const u8 = &.{},
 
     /// Scans the fake disk synchronously, so tests start with a fully
     /// scanned tree. The engine root is "/base".
@@ -65,6 +68,9 @@ pub const TestCtx = struct {
         defer arena.deinit();
 
         const path = try self._engine.pathOf(arena.allocator(), dir_id);
+        for (self.missing_paths) |missing| {
+            if (std.mem.eql(u8, missing, path)) return error.DirMissing;
+        }
         return self._engine.listDirMerged(gpa, arena.allocator(), dir_id, entriesFor(self.disk, path));
     }
 

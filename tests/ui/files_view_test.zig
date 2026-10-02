@@ -204,6 +204,38 @@ test "FilesView drops the hover highlight on keyboard navigation" {
     try snapshot.expectGolden("files_view/hover_dropped", rendered);
 }
 
+test "FilesView falls back to the parent when the opened dir is deleted" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.keyPress(Key.down));
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.keyPress(Key.enter));
+    d.deinit(gpa);
+    try std.testing.expect(!view._opened_dir_id.eql(.root));
+
+    // "sub" is deleted outside the app; the next update must walk us back
+    // out to the root listing instead of showing stale content
+    ctx.missing_paths = &.{"/base/sub"};
+    ctx.now_ms = 1000; // push past the update throttle
+
+    d = try harness.send(gpa, widget, harness.tick);
+    try std.testing.expect(d.redraw);
+    d.deinit(gpa);
+
+    try std.testing.expect(view._opened_dir_id.eql(.root));
+    try std.testing.expectEqual(@as(usize, 0), view._selected_index);
+    // fresh root listing: ".", "big", "sub", "root.txt"
+    try std.testing.expectEqual(@as(usize, 4), view._entries.items.len);
+}
+
 test "FilesView wheel scrolls without moving the selection" {
     var name_bufs: [20][8]u8 = undefined;
     var listing: [20]TestCtx.DirEntry = undefined;

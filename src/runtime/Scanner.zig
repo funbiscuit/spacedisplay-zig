@@ -84,14 +84,17 @@ pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)
     ScanEngine.deinitListDir(allocator, entries);
 }
 
-/// Merges tree state with a fresh listing of the directory on disk.
+/// Merges tree state with a fresh listing of the directory on disk. Fails
+/// with `error.DirMissing` when the directory cannot be opened: it was
+/// deleted (or became unreadable) while the view was inside it.
 pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: EntryId) !std.ArrayList(ListDirEntry) {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
     const dir_path = try self._engine.pathOf(arena.allocator(), dir_id);
-    const entries = try scanSingleDir(self._io, arena.allocator(), dir_path);
-    return self._engine.listDirMerged(allocator, arena.allocator(), dir_id, entries);
+    const listing = try scanSingleDir(self._io, arena.allocator(), dir_path);
+    if (listing.missing) return error.DirMissing;
+    return self._engine.listDirMerged(allocator, arena.allocator(), dir_id, listing.entries);
 }
 
 /// Prints the scanned tree as `<size>\t<path>` lines.
@@ -125,8 +128,8 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
         const dir_path = try engine.pathOf(allocator, id);
         defer allocator.free(dir_path);
 
-        const entries = try scanSingleDir(io, arena.allocator(), dir_path);
-        try engine.applyListing(allocator, arena.allocator(), id, entries);
+        const listing = try scanSingleDir(io, arena.allocator(), dir_path);
+        try engine.applyListing(allocator, arena.allocator(), id, listing.entries);
     }
 
     const c = engine.counters();
@@ -137,11 +140,18 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
     );
 }
 
-fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) ![]ScanEngine.DirEntry {
+const DirListing = struct {
+    entries: []ScanEngine.DirEntry,
+    /// The directory could not be opened: it does not exist (or became
+    /// unreadable), as opposed to existing but being empty.
+    missing: bool = false,
+};
+
+fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) !DirListing {
     var entries = std.ArrayList(ScanEngine.DirEntry).empty;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
-        return entries.items;
+        return .{ .entries = entries.items, .missing = true };
     };
     defer dir.close(io);
 
@@ -177,7 +187,7 @@ fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) ![]ScanEngine.D
         }
     }
 
-    return entries.items;
+    return .{ .entries = entries.items };
 }
 
 fn writeFixtureFile(dir: Io.Dir, sub_path: []const u8, size: usize) !void {
@@ -314,6 +324,23 @@ test "Scanner processes queued rescans after the scan settles" {
         waited += 1;
     }
     try std.testing.expect(waited < 10_000);
+}
+
+test "Scanner.listDir reports a deleted directory" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    const a_id = for (entries.items) |entry| {
+        if (entry.kind == .directory and std.mem.eql(u8, entry.name, "a")) break entry.id.?;
+    } else return error.MissingDir;
+
+    // delete it behind the scanner's back; the next listDir must report
+    // the disappearance instead of pretending the directory is empty
+    try fixture.tmp.dir.deleteTree(std.testing.io, "a");
+    try std.testing.expectError(error.DirMissing, fixture.scanner.listDir(std.testing.allocator, a_id));
 }
 
 test "Scanner deinit stops a running scan" {

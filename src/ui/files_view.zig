@@ -9,7 +9,9 @@ const Allocator = std.mem.Allocator;
 
 /// Directory listing widget. Generic over Ctx (runtime.Scanner in prod,
 /// scripted context in tests), which provides EntryId/ListDirEntry types
-/// and the data methods called below.
+/// and the data methods called below. `listDir` must fail with
+/// `error.DirMissing` when the directory cannot be opened; the view
+/// recovers by falling back to the parent.
 pub fn FilesView(comptime Ctx: type) type {
     return struct {
         const Self = @This();
@@ -67,6 +69,28 @@ pub fn FilesView(comptime Ctx: type) type {
             select_id: ?Ctx.EntryId = null,
         };
 
+        /// Lists the directory currently open. When it cannot be opened —
+        /// deleted outside the app, or by a queued delete while we were
+        /// inside it — falls back to the parent and lists that instead.
+        /// Returns null when even the scanned root is gone; the caller then
+        /// settles for an empty listing.
+        fn listOpenedDir(self: *Self) !?std.ArrayList(Ctx.ListDirEntry) {
+            while (true) {
+                const entries = self._ctx.listDir(self._allocator, self._opened_dir_id) catch |err| switch (err) {
+                    error.DirMissing => {
+                        const parent = self._ctx.getParentId(self._opened_dir_id) orelse return null;
+                        self._opened_dir_id = parent;
+                        self._selected_index = 0;
+                        self._offset = 0;
+                        self._hovered_index = null;
+                        continue;
+                    },
+                    else => return err,
+                };
+                return entries;
+            }
+        }
+
         fn updateEntries(self: *Self, params: UpdateParams) !bool {
             const new_scanned_id = self._ctx.getScannedChildId(self._opened_dir_id);
             const scanned_changed = new_scanned_id != self._scanned_child_id;
@@ -74,7 +98,7 @@ pub fn FilesView(comptime Ctx: type) type {
             const now = self._ctx.nowMs();
             if (self._ctx.hasChanges() or params.force or self._last_update_time + 500 < now) {
                 self._last_update_time = now;
-                const entries = try self._ctx.listDir(self._allocator, self._opened_dir_id);
+                const entries = (try self.listOpenedDir()) orelse std.ArrayList(Ctx.ListDirEntry).empty;
                 Ctx.deinitListDir(self._allocator, &self._entries);
                 self._entries = entries;
                 if (params.select_id) |select_id| {
