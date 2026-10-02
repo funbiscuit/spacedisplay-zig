@@ -11,11 +11,7 @@ pub const std_options: std.Options = .{
 
 pub const panic = spacedisplay.vaxis.panic_handler;
 
-pub fn main() !u8 {
-    spacedisplay.logging.init();
-    var gpa = std.heap.DebugAllocator(.{}).init;
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
-
-    return spacedisplay.cli.run(allocator);
+pub fn main(init: std.process.Init) !u8 {
+    spacedisplay.logging.init(init.io);
+    return spacedisplay.cli.run(init);
 }

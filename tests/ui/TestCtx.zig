@@ -31,7 +31,7 @@ pub const TestCtx = struct {
     /// Scans the fake disk synchronously, so tests start with a fully
     /// scanned tree. The engine root is "/base".
     pub fn init(gpa: Allocator, disk: []const Disk) !TestCtx {
-        var scan_engine = try ScanEngine.init(gpa, "/base");
+        var scan_engine = try ScanEngine.init(gpa, std.testing.io, "/base");
         errdefer scan_engine.deinit(gpa);
 
         var arena = std.heap.ArenaAllocator.init(gpa);

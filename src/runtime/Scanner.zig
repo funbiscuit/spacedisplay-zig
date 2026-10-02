@@ -6,6 +6,7 @@ const platform = @import("../platform.zig");
 const ScanEngine = @import("../core/ScanEngine.zig");
 
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 const Scanner = @This();
 
 pub const EntryId = ScanEngine.EntryId;
@@ -15,16 +16,17 @@ pub const DumpOptions = ScanEngine.DumpOptions;
 
 _engine: *ScanEngine,
 _thread: std.Thread,
+_io: Io,
 
-pub fn init(allocator: Allocator, scanned_path: []const u8) !Scanner {
+pub fn init(io: Io, allocator: Allocator, scanned_path: []const u8) !Scanner {
     const engine = try allocator.create(ScanEngine);
     errdefer allocator.destroy(engine);
-    engine.* = try ScanEngine.init(allocator, scanned_path);
+    engine.* = try ScanEngine.init(allocator, io, scanned_path);
     errdefer engine.deinit(allocator);
 
-    const thread = try std.Thread.spawn(.{}, workerFunc, .{ engine, allocator });
+    const thread = try std.Thread.spawn(.{}, workerFunc, .{ engine, allocator, io });
 
-    return .{ ._engine = engine, ._thread = thread };
+    return .{ ._engine = engine, ._thread = thread, ._io = io };
 }
 
 pub fn deinit(self: *Scanner, allocator: Allocator) void {
@@ -61,8 +63,21 @@ pub fn getScannedChildId(self: *Scanner, parent: EntryId) ?EntryId {
 
 /// Wall clock for the UI (spinner animation, update throttling).
 pub fn nowMs(self: *Scanner) i64 {
-    _ = self;
-    return std.time.milliTimestamp();
+    return std.Io.Clock.awake.now(self._io).toMilliseconds();
+}
+
+/// Blocks until the engine is idle — the scan queue has drained (bounded by
+/// `timeout_ms`). Repeatable: waits out later rescans too.
+pub fn waitIdle(self: *Scanner, timeout_ms: u64) !void {
+    return self.waitIdleTimeout(.{ .duration = .{
+        .raw = .fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } });
+}
+
+/// Blocks until the engine is idle; `.none` waits indefinitely.
+pub fn waitIdleTimeout(self: *Scanner, timeout: std.Io.Timeout) !void {
+    return self._engine.waitIdle(self._io, timeout);
 }
 
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
@@ -75,7 +90,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: EntryId) !std.Array
     defer arena.deinit();
 
     const dir_path = try self._engine.pathOf(arena.allocator(), dir_id);
-    const entries = try scanSingleDir(arena.allocator(), dir_path);
+    const entries = try scanSingleDir(self._io, arena.allocator(), dir_path);
     return self._engine.listDirMerged(allocator, arena.allocator(), dir_id, entries);
 }
 
@@ -84,15 +99,15 @@ pub fn dump(self: *Scanner, allocator: Allocator, writer: *std.Io.Writer, opts: 
     return self._engine.dump(allocator, writer, opts);
 }
 
-fn workerFunc(engine: *ScanEngine, allocator: Allocator) void {
-    workerFuncErr(engine, allocator) catch |err| {
+fn workerFunc(engine: *ScanEngine, allocator: Allocator, io: Io) void {
+    workerFuncErr(engine, allocator, io) catch |err| {
         std.log.err("Error: {any}", .{err});
     };
     engine.markIdle();
 }
 
-fn workerFuncErr(engine: *ScanEngine, allocator: Allocator) !void {
-    const scan_start_time = std.time.milliTimestamp();
+fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
+    const scan_start_time = std.Io.Clock.awake.now(io);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -101,7 +116,7 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator) !void {
     // a stop is requested
     while (!engine.stopRequested()) {
         const id = engine.nextDirToScan() orelse {
-            std.Thread.sleep(100_000); // 0.1ms
+            io.sleep(.fromMicroseconds(100), .awake) catch {}; // 0.1ms
             continue;
         };
 
@@ -110,29 +125,32 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator) !void {
         const dir_path = try engine.pathOf(allocator, id);
         defer allocator.free(dir_path);
 
-        const entries = try scanSingleDir(arena.allocator(), dir_path);
+        const entries = try scanSingleDir(io, arena.allocator(), dir_path);
         try engine.applyListing(allocator, arena.allocator(), id, entries);
     }
 
     const c = engine.counters();
-    const scan_millis: f64 = @floatFromInt(std.time.milliTimestamp() - scan_start_time);
+    const scan_millis: f64 = @floatFromInt(scan_start_time.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds());
     std.log.info(
         "Scan finished in {d:.2}s. Dirs: {d}. Files: {d}. Size: {d}",
         .{ scan_millis / 1000, c.dirs, c.files, c.scanned_size },
     );
 }
 
-fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]ScanEngine.DirEntry {
+fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) ![]ScanEngine.DirEntry {
     var entries = std.ArrayList(ScanEngine.DirEntry).empty;
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
         return entries.items;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var it = dir.iterateAssumeFirstIteration();
-    while (it.next()) |maybe_entry| {
-        const entry = maybe_entry orelse break;
+    while (true) {
+        const entry = it.next(io) catch |err| {
+            std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
+            break;
+        } orelse break;
         const name = try arena.dupe(u8, entry.name);
         switch (entry.kind) {
             .directory => {
@@ -145,7 +163,7 @@ fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]ScanEngine.DirEntry 
                 });
             },
             .file => {
-                const stats = dir.statFile(entry.name) catch |err| {
+                const stats = dir.statFile(io, entry.name, .{}) catch |err| {
                     std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
                     continue;
                 };
@@ -157,31 +175,21 @@ fn scanSingleDir(arena: Allocator, dir_path: []const u8) ![]ScanEngine.DirEntry 
             },
             else => {},
         }
-    } else |err| {
-        std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
     }
 
     return entries.items;
 }
 
-fn waitIdle(scanner: *Scanner, timeout_ms: u64) !void {
-    var waited: u64 = 0;
-    while (scanner.isScanning()) {
-        if (waited >= timeout_ms) return error.ScanTimeout;
-        std.Thread.sleep(std.time.ns_per_ms);
-        waited += 1;
-    }
-}
-
-fn writeFixtureFile(dir: std.fs.Dir, sub_path: []const u8, size: usize) !void {
-    if (std.fs.path.dirname(sub_path)) |parent| try dir.makePath(parent);
-    var f = try dir.createFile(sub_path, .{});
-    defer f.close();
+fn writeFixtureFile(dir: Io.Dir, sub_path: []const u8, size: usize) !void {
+    const io = std.testing.io;
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
+    var f = try dir.createFile(io, sub_path, .{});
+    defer f.close(io);
     var buf = [_]u8{0} ** 4096;
     var left = size;
     while (left > 0) {
         const n = @min(left, buf.len);
-        try f.writeAll(buf[0..n]);
+        try f.writeStreamingAll(io, buf[0..n]);
         left -= n;
     }
 }
@@ -200,9 +208,9 @@ const Fixture = struct {
         try writeFixtureFile(tmp.dir, "a/one.bin", 100);
         try writeFixtureFile(tmp.dir, "a/b/two.bin", 200);
 
-        const path = try tmp.dir.realpathAlloc(gpa, ".");
+        const path = try tmpPath(gpa, &tmp);
         defer gpa.free(path);
-        const scanner = try Scanner.init(gpa, path);
+        const scanner = try Scanner.init(std.testing.io, gpa, path);
         return .{ .tmp = tmp, .scanner = scanner };
     }
 
@@ -212,10 +220,18 @@ const Fixture = struct {
     }
 };
 
+/// Absolute path of a testing.TmpDir without realpath: cwd plus the
+/// `.zig-cache/tmp` prefix that tmpDir creates under.
+fn tmpPath(allocator: Allocator, tmp: *const std.testing.TmpDir) ![]u8 {
+    const cwd_path = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd_path);
+    return std.fs.path.join(allocator, &.{ cwd_path, ".zig-cache", "tmp", &tmp.sub_path });
+}
+
 test "Scanner scans a fixture and reports totals" {
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
-    try waitIdle(&fixture.scanner, 10_000);
+    try fixture.scanner.waitIdle(10_000);
 
     const stats = try fixture.scanner.getStats(std.testing.allocator, .root);
     try std.testing.expectEqual(@as(u32, 3), stats.total_files);
@@ -227,7 +243,7 @@ test "Scanner scans a fixture and reports totals" {
 test "Scanner reports subdirectory stats" {
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
-    try waitIdle(&fixture.scanner, 10_000);
+    try fixture.scanner.waitIdle(10_000);
 
     var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
     defer Scanner.deinitListDir(std.testing.allocator, &entries);
@@ -242,7 +258,7 @@ test "Scanner reports subdirectory stats" {
 test "Scanner listDir merges tree with disk state" {
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
-    try waitIdle(&fixture.scanner, 10_000);
+    try fixture.scanner.waitIdle(10_000);
 
     var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
     defer Scanner.deinitListDir(std.testing.allocator, &entries);
@@ -273,7 +289,7 @@ test "Scanner listDir merges tree with disk state" {
 test "Scanner processes queued rescans after the scan settles" {
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
-    try waitIdle(&fixture.scanner, 10_000);
+    try fixture.scanner.waitIdle(10_000);
 
     // grow the fixture behind the scanner's back; the next listDir notices
     // the mismatch and queues a rescan for the parked worker
@@ -294,7 +310,7 @@ test "Scanner processes queued rescans after the scan settles" {
             if (entry.kind == .directory and std.mem.eql(u8, entry.name, "new")) break entry.id;
         } else null;
         if (id != null) break;
-        std.Thread.sleep(std.time.ns_per_ms);
+        std.testing.io.sleep(.fromMilliseconds(1), .awake) catch {};
         waited += 1;
     }
     try std.testing.expect(waited < 10_000);

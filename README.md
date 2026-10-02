@@ -23,7 +23,7 @@ the [latest](https://github.com/funbiscuit/spacedisplay-zig/releases/latest) bui
 
 ### From source
 
-To build `spacedisplay` from source you'll need zig 0.15.2 installed.
+To build `spacedisplay` from source you'll need zig 0.16.0 installed.
 
 ```shell
 zig build -Doptimize=ReleaseSafe

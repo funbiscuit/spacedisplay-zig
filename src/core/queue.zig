@@ -1,21 +1,16 @@
-const std = @import("std");
+//! Fixed-capacity LIFO ring. Not synchronized: callers guard concurrent
+//! access externally.
 
-const Allocator = std.mem.Allocator;
-const Mutex = std.Thread.Mutex;
-const Condition = std.Thread.Condition;
+const std = @import("std");
 
 pub fn Queue(comptime T: type, N: comptime_int) type {
     return struct {
-        _mutex: Mutex = .{},
-        _cond: Condition = .{},
         _elements: [N]T = undefined,
         _len: usize = 0,
 
         const Self = @This();
 
         pub fn putBack(self: *Self, item: T) !void {
-            self._mutex.lock();
-            defer self._mutex.unlock();
             if (self._len == self._elements.len) {
                 return error.NoSpace;
             }
@@ -24,8 +19,6 @@ pub fn Queue(comptime T: type, N: comptime_int) type {
         }
 
         pub fn popBack(self: *Self) ?T {
-            self._mutex.lock();
-            defer self._mutex.unlock();
             if (self._len == 0) {
                 return null;
             }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = std.c;
+const linux = std.os.linux;
 const posix = @import("platform/posix.zig");
 const ScanEngine = @import("core/ScanEngine.zig");
 
@@ -20,19 +21,16 @@ pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8)
     const child_pathz = try allocator.dupeZ(u8, child_path);
     defer allocator.free(child_pathz);
 
-    if (statPath(child_pathz)) |stat1| {
-        if (statPath(parent_pathz)) |stat2| {
-            return stat1.dev == stat2.dev;
+    if (devOf(child_pathz)) |child_dev| {
+        if (devOf(parent_pathz)) |parent_dev| {
+            return child_dev == parent_dev;
         }
     }
     return false;
 }
 
 pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?MountStats {
-    const abs_path = std.fs.cwd().realpathAlloc(allocator, path) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => return null,
-    };
+    const abs_path = realpathAlloc(allocator, path) orelse return null;
     defer allocator.free(abs_path);
     const abs_pathz = try allocator.dupeZ(u8, abs_path);
     defer allocator.free(abs_pathz);
@@ -45,11 +43,11 @@ pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?Mo
 
     const maybe_parent_abs_path = std.fs.path.dirname(abs_path);
     const is_mount_point = if (maybe_parent_abs_path) |parent_abs_path| blk: {
-        if (statPath(abs_pathz)) |stat1| {
+        if (devOf(abs_pathz)) |dev1| {
             const parent_pathz = try allocator.dupeZ(u8, parent_abs_path);
             defer allocator.free(parent_pathz);
-            if (statPath(parent_pathz)) |stat2| {
-                break :blk stat1.dev != stat2.dev;
+            if (devOf(parent_pathz)) |dev2| {
+                break :blk dev1 != dev2;
             }
         }
         break :blk false;
@@ -68,13 +66,36 @@ pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?Mo
     };
 }
 
-fn statPath(path: [:0]const u8) ?c.Stat {
-    var stat: c.Stat = std.mem.zeroes(c.Stat);
+/// Resolves `path` against symlinks; null when it does not exist. The result
+/// is owned by `allocator`.
+fn realpathAlloc(allocator: Allocator, path: []const u8) ?[]u8 {
+    const pathz = allocator.dupeZ(u8, path) catch return null;
+    defer allocator.free(pathz);
 
-    const err = std.c.stat(path, &stat);
-    if (err != 0) {
-        std.log.warn("Failed to stat {s}: {d}", .{ path, err });
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const resolved = c.realpath(pathz, &buf) orelse return null;
+    return allocator.dupe(u8, std.mem.span(resolved)) catch null;
+}
+
+/// Device id of the filesystem holding `path`; null when it does not exist.
+/// std.Io.File.Stat carries no device id, so this goes through statx(2).
+fn devOf(path: [:0]const u8) ?u64 {
+    var stx: linux.Statx = std.mem.zeroes(linux.Statx);
+    const rc = c.statx(std.posix.AT.FDCWD, path, 0, .{
+        .TYPE = true,
+        .MODE = true,
+        .NLINK = true,
+        .UID = true,
+        .GID = true,
+        .ATIME = true,
+        .MTIME = true,
+        .CTIME = true,
+        .INO = true,
+        .SIZE = true,
+        .BLOCKS = true,
+    }, &stx);
+    if (rc != 0) {
         return null;
     }
-    return stat;
+    return (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
 }

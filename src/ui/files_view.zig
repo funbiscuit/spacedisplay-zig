@@ -153,16 +153,20 @@ pub fn FilesView(comptime Ctx: type) type {
                     }
                 },
                 .mouse => |mouse| {
-                    self._last_mouse_row = mouse.row;
+                    // vaxis reports positions as i16; rows can only be
+                    // negative for events outside the widget, which we
+                    // never act on below.
+                    const row: u32 = @intCast(@max(0, mouse.row));
+                    self._last_mouse_row = row;
                     if (mouse.type == .motion) {
-                        self._selected_index = self._offset + mouse.row;
+                        self._selected_index = self._offset + row;
                         ctx.redraw = true;
                         try self.updateMouseShape(ctx);
                     }
                     if (mouse.button == .wheel_up) {
                         if (self._offset > 0) {
                             self._offset -= 1;
-                            self._selected_index = self._offset + mouse.row;
+                            self._selected_index = self._offset + row;
                         }
                         ctx.consumeAndRedraw();
                     }
@@ -175,11 +179,11 @@ pub fn FilesView(comptime Ctx: type) type {
                                 self._offset = @min(self._offset, self._entries.items.len - height);
                             }
                         }
-                        self._selected_index = self._offset + mouse.row;
+                        self._selected_index = self._offset + row;
                         ctx.consumeAndRedraw();
                     }
                     if (mouse.button == .left and mouse.type == .release) {
-                        if (try self.openEntry(self._offset + mouse.row)) {
+                        if (try self.openEntry(self._offset + row)) {
                             try self.updateMouseShape(ctx);
                             ctx.consumeAndRedraw();
                         }

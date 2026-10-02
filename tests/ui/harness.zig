@@ -162,7 +162,7 @@ pub const Dispatch = struct {
 pub fn send(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
     var cmds: vxfw.CommandList = .empty;
     errdefer cmds.deinit(gpa);
-    var event_ctx = vxfw.EventContext{ .alloc = gpa, .cmds = cmds };
+    var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = cmds };
     try widget.handleEvent(&event_ctx, event);
     var focused: ?vxfw.Widget = null;
     for (event_ctx.cmds.items) |cmd| {
@@ -184,7 +184,7 @@ pub fn keyPress(codepoint: u21) vxfw.Event {
     return .{ .key_press = .{ .codepoint = codepoint, .mods = .{} } };
 }
 
-pub fn mouse(button: vaxis.Mouse.Button, mtype: vaxis.Mouse.Type, row: u16, col: u16) vxfw.Event {
+pub fn mouse(button: vaxis.Mouse.Button, mtype: vaxis.Mouse.Type, row: i16, col: i16) vxfw.Event {
     return .{ .mouse = .{
         .col = col,
         .row = row,

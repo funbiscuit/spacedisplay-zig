@@ -2,7 +2,7 @@
 
 ## Toolchain
 
-**Zig is pinned to 0.15.x**
+**Zig is pinned to 0.16.x**
 
 ## Commands
 
@@ -21,7 +21,7 @@ src/
   lib.zig         library root re-exporting the public API (owns the third-party imports)
   cli.zig         argument parsing, app startup
   logging.zig     stderr logging with allow_log kill switch
-  platform.zig    mount stats / can-scan queries (statvfs, stat)
+  platform.zig    mount stats / can-scan queries (statvfs, statx)
   core.zig        namespace for the pure logic and data in core/
   core/           pure logic and data (no vaxis, threads, or filesystem)
   runtime.zig     namespace for the drivers in runtime/

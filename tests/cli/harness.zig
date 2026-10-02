@@ -4,6 +4,7 @@ const std = @import("std");
 const test_options = @import("test_options");
 
 const gpa = std.testing.allocator;
+const io = std.testing.io;
 
 pub const Run = struct {
     output: []u8,
@@ -22,14 +23,12 @@ pub fn runBinary(args: []const []const u8, fixture_path: []const u8) !Run {
     try argv.appendSlice(gpa, args);
     try argv.append(gpa, fixture_path);
 
-    var child = std.process.Child.init(argv.items, gpa);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Inherit;
-    try child.spawn();
-
-    const output = try child.stdout.?.readToEndAlloc(gpa, 1 << 20);
-    errdefer gpa.free(output);
-    const term = try child.wait();
-    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, term);
-    return .{ .output = output };
+    const result = try std.process.run(gpa, io, .{ .argv = argv.items });
+    errdefer {
+        gpa.free(result.stdout);
+        gpa.free(result.stderr);
+    }
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, result.term);
+    gpa.free(result.stderr);
+    return .{ .output = result.stdout };
 }

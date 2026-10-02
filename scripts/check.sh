@@ -5,6 +5,8 @@ cd "$(dirname "$0")/.."
 
 ZIG=${ZIG:-zig}
 
-$ZIG fmt --check .
+# Only first-party sources: zig-pkg/ is a dependency cache whose contents
+# zig fmt may legitimately disagree with.
+$ZIG fmt --check src tests build.zig build.zig.zon
 $ZIG build
 $ZIG build test

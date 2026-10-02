@@ -8,7 +8,7 @@ const Tree = @import("Tree.zig");
 const queue = @import("queue.zig");
 
 const Allocator = std.mem.Allocator;
-const Mutex = std.Thread.Mutex;
+const Mutex = std.Io.Mutex;
 
 const ScanEngine = @This();
 
@@ -91,7 +91,8 @@ const QueueItem = struct {
     rescan_existing: bool,
 };
 
-_mutex: Mutex = .{},
+_mutex: Mutex = .init,
+_io: std.Io,
 _tree: Tree,
 /// Owned copy of the scanned root path
 _scanned_path: []const u8,
@@ -103,6 +104,11 @@ user_scan_queue: queue.Queue(QueueItem, 16) = .{},
 /// The item returned by the last nextDirToScan call, consumed by applyListing
 _in_flight: ?QueueItem = null,
 
+/// Incremented on every transition to idle (queue drained or stop
+/// requested); idle-waiters park on it, so the wait survives repeated
+/// scans instead of firing only once.
+_idle_epoch: std.atomic.Value(u32) = .init(0),
+
 _should_stop: bool = false,
 _is_scanning: bool = false,
 _has_changes: bool = false,
@@ -112,13 +118,14 @@ total_files: u32 = 0,
 scanned_size: u64 = 0,
 currently_scanned_id: EntryId = .root,
 
-pub fn init(allocator: Allocator, scanned_path: []const u8) !ScanEngine {
+pub fn init(allocator: Allocator, io: std.Io, scanned_path: []const u8) !ScanEngine {
     const path = try allocator.dupe(u8, scanned_path);
     errdefer allocator.free(path);
     var tree = try Tree.init(allocator, path);
     errdefer tree.deinit(allocator);
 
     var engine = ScanEngine{
+        ._io = io,
         ._tree = tree,
         ._scanned_path = path,
         ._is_scanning = true,
@@ -138,34 +145,43 @@ pub fn scannedPath(self: *ScanEngine) []const u8 {
 }
 
 pub fn requestStop(self: *ScanEngine) void {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     self._should_stop = true;
 }
 
 pub fn stopRequested(self: *ScanEngine) bool {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     return self._should_stop;
+}
+
+/// Transitions to idle and wakes idle-waiters. No-op when already idle.
+/// Caller must hold `_mutex`.
+fn setIdleLocked(self: *ScanEngine) void {
+    if (!self._is_scanning) return;
+    self._is_scanning = false;
+    _ = self._idle_epoch.fetchAdd(1, .release);
+    self._io.futexWake(u32, &self._idle_epoch.raw, std.math.maxInt(u32));
 }
 
 /// Clears the scanning flag; called by the runtime worker when it exits.
 pub fn markIdle(self: *ScanEngine) void {
-    self._mutex.lock();
-    defer self._mutex.unlock();
-    self._is_scanning = false;
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
+    self.setIdleLocked();
 }
 
 pub fn isScanning(self: *ScanEngine) bool {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     return self._is_scanning;
 }
 
 /// Returns and clears the pending-changes flag.
 pub fn hasChanges(self: *ScanEngine) bool {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     const had = self._has_changes;
     self._has_changes = false;
     return had;
@@ -174,17 +190,17 @@ pub fn hasChanges(self: *ScanEngine) bool {
 /// Pops the next directory to scan (user rescans first). Returns null when
 /// the queue is drained or a stop was requested.
 pub fn nextDirToScan(self: *ScanEngine) ?EntryId {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     if (self._should_stop) {
-        self._is_scanning = false;
+        self.setIdleLocked();
         return null;
     }
     const item: QueueItem = blk: {
         if (self.user_scan_queue.popBack()) |user_item| break :blk user_item;
         if (self._scan_stack.pop()) |stack_item| break :blk stack_item;
-        self._is_scanning = false;
+        self.setIdleLocked();
         return null;
     };
     self._in_flight = item;
@@ -193,10 +209,37 @@ pub fn nextDirToScan(self: *ScanEngine) ?EntryId {
     return item.id;
 }
 
+/// Blocks until the engine is idle: no listing in flight and no queued work
+/// (or a stop was requested). Repeatable — a rescan that drains later is
+/// waited out too. Returns immediately when already idle; note this has the
+/// same TOCTOU window as `isScanning`: work queued just after the check may
+/// be missed. `error.Timeout` when the timeout expires first.
+pub fn waitIdle(self: *ScanEngine, io: std.Io, timeout: std.Io.Timeout) (std.Io.Timeout.Error || std.Io.Cancelable)!void {
+    const deadline: ?std.Io.Clock.Timestamp = switch (timeout) {
+        .none => null,
+        .duration => |d| .fromNow(io, d),
+        .deadline => |d| d,
+    };
+    while (true) {
+        self._mutex.lockUncancelable(self._io);
+        const idle = !self._is_scanning;
+        const epoch = self._idle_epoch.raw;
+        self._mutex.unlock(self._io);
+
+        if (idle) return;
+        if (deadline) |d| {
+            if (d.clock.now(io).durationTo(d.raw).nanoseconds <= 0) return error.Timeout;
+        }
+
+        const wait: std.Io.Timeout = if (deadline) |d| .{ .deadline = d } else .none;
+        io.futexWaitTimeout(u32, &self._idle_epoch.raw, epoch, wait) catch |err| return err;
+    }
+}
+
 /// Full path of a tree entry, allocated with the given allocator.
 pub fn pathOf(self: *ScanEngine, allocator: Allocator, id: EntryId) ![]u8 {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     var path_buf = std.ArrayList(u8).empty;
     errdefer path_buf.deinit(allocator);
@@ -231,8 +274,8 @@ pub fn applyListing(
         }
     }
 
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     var size_delta: i64 = 0;
     var files_delta: i32 = 0;
@@ -279,8 +322,8 @@ pub fn applyListing(
 }
 
 pub fn getStats(self: *ScanEngine, dir_id: EntryId, mount: ?MountStats) ScanStats {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     const scanned_size = self.scanned_size;
     var stats: ScanStats = .{
@@ -308,15 +351,15 @@ pub fn getStats(self: *ScanEngine, dir_id: EntryId, mount: ?MountStats) ScanStat
 }
 
 pub fn getParentId(self: *ScanEngine, id: EntryId) ?EntryId {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     return self._tree.getNode(id).parent();
 }
 
 /// Returns the dir currently being scanned if it is inside `parent`.
 pub fn getScannedChildId(self: *ScanEngine, parent: EntryId) ?EntryId {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     if (!self._is_scanning) {
         return null;
@@ -337,6 +380,8 @@ pub fn getScannedChildId(self: *ScanEngine, parent: EntryId) ?EntryId {
 /// Queues a rescan request coming from user actions. Silently ignored when
 /// the bounded queue is full.
 pub fn queueUserScan(self: *ScanEngine, id: EntryId, rescan_existing: bool) void {
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     self.user_scan_queue.putBack(.{ .id = id, .rescan_existing = rescan_existing }) catch {};
 }
 
@@ -348,8 +393,8 @@ pub const Counters = struct {
 
 /// Snapshot of the progress counters.
 pub fn counters(self: *ScanEngine) Counters {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
     return .{
         .dirs = self.total_dirs,
         .files = self.total_files,
@@ -373,8 +418,8 @@ pub fn dump(
     writer: *std.Io.Writer,
     opts: DumpOptions,
 ) !void {
-    self._mutex.lock();
-    defer self._mutex.unlock();
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -438,7 +483,8 @@ fn dumpRec(
             });
             if (depth + 1 < opts.max_depth) {
                 const child_prefix = try std.mem.concat(arena, u8, &.{
-                    prefix, if (is_last) "    " else "│   ",
+                    prefix,
+                    if (is_last) "    " else "│   ",
                 });
                 try self.dumpRec(arena, writer, child_id, child_prefix, depth + 1, opts, width);
             }
@@ -449,7 +495,7 @@ fn dumpRec(
 
 fn sizeLabel(arena: Allocator, size: i64) ![]const u8 {
     const padded = try format.formatSize(arena, @intCast(@max(0, size)), 0);
-    return std.mem.trimRight(u8, padded, " ");
+    return std.mem.trimEnd(u8, padded, " ");
 }
 
 /// Merges tree children with a fresh listing taken by the caller; queues a
@@ -468,8 +514,8 @@ pub fn listDirMerged(
     var dir_path: []const u8 = "";
 
     {
-        self._mutex.lock();
-        defer self._mutex.unlock();
+        self._mutex.lockUncancelable(self._io);
+        defer self._mutex.unlock(self._io);
 
         const root = self._tree.getNode(dir_id);
         if (root.parent()) |parent| {
@@ -574,4 +620,36 @@ pub fn listDirMerged(
 
     std.mem.sort(ListDirEntry, root_children.items, {}, ListDirEntry.lessThan);
     return root_children;
+}
+
+const zero_wait: std.Io.Timeout = .{ .duration = .{ .raw = .zero, .clock = .awake } };
+
+test "waitIdle re-arms across repeated scans" {
+    const gpa = std.testing.allocator;
+    var engine = try ScanEngine.init(gpa, std.testing.io, "base");
+    defer engine.deinit(gpa);
+
+    // scanning: even a zero timeout must not report idle
+    try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
+
+    const root_id = engine.nextDirToScan().?;
+    try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    try engine.applyListing(gpa, arena.allocator(), root_id, &.{});
+    try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
+
+    // the listing is consumed and nothing is queued: first idle
+    try std.testing.expect(engine.nextDirToScan() == null);
+    try engine.waitIdle(std.testing.io, zero_wait);
+
+    // a rescan after the first completion re-arms the wait
+    engine.queueUserScan(.root, false);
+    const rescanned_id = engine.nextDirToScan().?;
+    try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
+
+    try engine.applyListing(gpa, arena.allocator(), rescanned_id, &.{});
+    try std.testing.expect(engine.nextDirToScan() == null);
+    try engine.waitIdle(std.testing.io, zero_wait);
 }

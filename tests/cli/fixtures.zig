@@ -3,6 +3,7 @@
 const std = @import("std");
 
 const gpa = std.testing.allocator;
+const io = std.testing.io;
 
 pub const PrintFixture = struct {
     tmp: std.testing.TmpDir,
@@ -16,7 +17,7 @@ pub const PrintFixture = struct {
         try writeFile(tmp.dir, "root50.bin", 50);
         try writeFile(tmp.dir, "a/one.bin", 100);
         try writeFile(tmp.dir, "a/b/two.bin", 200);
-        const path = try tmp.dir.realpathAlloc(gpa, ".");
+        const path = try tmpPath(&tmp);
         errdefer gpa.free(path);
         return .{ .tmp = tmp, .path = path };
     }
@@ -27,15 +28,23 @@ pub const PrintFixture = struct {
     }
 };
 
-fn writeFile(dir: std.fs.Dir, sub_path: []const u8, size: usize) !void {
-    if (std.fs.path.dirname(sub_path)) |parent| try dir.makePath(parent);
-    var f = try dir.createFile(sub_path, .{});
-    defer f.close();
+/// Absolute path of a testing.TmpDir without realpath: cwd plus the
+/// `.zig-cache/tmp` prefix that tmpDir creates under.
+fn tmpPath(tmp: *const std.testing.TmpDir) ![]u8 {
+    const cwd_path = try std.process.currentPathAlloc(io, gpa);
+    defer gpa.free(cwd_path);
+    return std.fs.path.join(gpa, &.{ cwd_path, ".zig-cache", "tmp", &tmp.sub_path });
+}
+
+fn writeFile(dir: std.Io.Dir, sub_path: []const u8, size: usize) !void {
+    if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
+    var f = try dir.createFile(io, sub_path, .{});
+    defer f.close(io);
     var buf = [_]u8{0} ** 4096;
     var left = size;
     while (left > 0) {
         const n = @min(left, buf.len);
-        try f.writeAll(buf[0..n]);
+        try f.writeStreamingAll(io, buf[0..n]);
         left -= n;
     }
 }
