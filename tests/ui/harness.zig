@@ -160,19 +160,25 @@ pub const Dispatch = struct {
 
 /// Delivers an event to the widget and returns the resulting context flags.
 pub fn send(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
-    return dispatch(gpa, widget, event, false);
+    return dispatch(gpa, widget, event, false, .at_target);
 }
 
 /// Delivers an event to the widget's capture handler — the first step of the
 /// real app's event routing, before any focused widget sees the event.
 pub fn sendCapture(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
-    return dispatch(gpa, widget, event, true);
+    return dispatch(gpa, widget, event, true, .capturing);
 }
 
-fn dispatch(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event, capture: bool) !Dispatch {
+/// Like send, but with an explicit phase. The real app dispatches mouse
+/// events as .capturing, .at_target and .bubbling while walking the hit list.
+pub fn sendPhase(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event, phase: vxfw.EventContext.Phase) !Dispatch {
+    return dispatch(gpa, widget, event, false, phase);
+}
+
+fn dispatch(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event, capture: bool, phase: vxfw.EventContext.Phase) !Dispatch {
     var cmds: vxfw.CommandList = .empty;
     errdefer cmds.deinit(gpa);
-    var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = cmds };
+    var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = cmds, .phase = phase };
     if (capture) {
         try widget.captureEvent(&event_ctx, event);
     } else {

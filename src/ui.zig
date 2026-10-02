@@ -4,6 +4,7 @@ const std = @import("std");
 
 pub const AppView = @import("ui/app_view.zig").AppView;
 pub const FilesView = @import("ui/files_view.zig").FilesView;
+pub const ModalHost = @import("ui/ModalHost.zig").ModalHost;
 pub const ProgressBar = @import("ui/ProgressBar.zig");
 pub const utils = @import("ui/utils.zig");
 
