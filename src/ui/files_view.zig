@@ -20,6 +20,14 @@ pub fn FilesView(comptime Ctx: type) type {
         _opened_dir_id: Ctx.EntryId = .root,
         _scanned_child_id: ?Ctx.EntryId = null,
         _selected_index: usize = 1,
+        /// Set when the keyboard moved the selection; the next draw scrolls
+        /// the view to it. Wheel scrolling deliberately does not set this,
+        /// so it can park the selection outside the view.
+        _snap_selection: bool = false,
+        /// Row the mouse is over (absolute index into _entries), if any.
+        /// Deliberately independent of _selected_index: mouse motion moves
+        /// only the hover, never the selection.
+        _hovered_index: ?usize = null,
         _last_mouse_row: ?u32 = null,
         _last_height: ?u16 = null,
         _last_update_time: i64 = 0,
@@ -88,12 +96,20 @@ pub fn FilesView(comptime Ctx: type) type {
                 if (entry.id) |id| {
                     self._opened_dir_id = id;
                     self._offset = 0;
-                    self._selected_index = self._last_mouse_row orelse 1;
+                    self._selected_index = 1;
+                    self._hovered_index = null;
                     _ = try self.updateEntries(.{ .force = true });
                     return true;
                 }
             }
             return false;
+        }
+
+        /// Hover target for a mouse event on `row`: the absolute entry index
+        /// under the cursor, or null past the end of the listing.
+        fn hoverIndexAt(self: *Self, row: u32) ?usize {
+            const index: usize = self._offset + row;
+            return if (index < self._entries.items.len) index else null;
         }
 
         fn updateMouseShape(self: *Self, ctx: *vxfw.EventContext) !void {
@@ -113,6 +129,11 @@ pub fn FilesView(comptime Ctx: type) type {
                 },
                 .key_press => |key| {
                     try ctx.setMouseShape(.default);
+                    // Navigation keys drop the hover highlight and scroll
+                    // the selection back into view on the next draw; the
+                    // next mouse motion brings the highlight back.
+                    self._hovered_index = null;
+                    self._snap_selection = true;
                     if (key.matches(vaxis.Key.escape, .{}) or
                         key.matches(vaxis.Key.backspace, .{}) or
                         key.matches(vaxis.Key.left, .{}))
@@ -159,14 +180,14 @@ pub fn FilesView(comptime Ctx: type) type {
                     const row: u32 = @intCast(@max(0, mouse.row));
                     self._last_mouse_row = row;
                     if (mouse.type == .motion) {
-                        self._selected_index = self._offset + row;
+                        self._hovered_index = self.hoverIndexAt(row);
                         ctx.redraw = true;
                         try self.updateMouseShape(ctx);
                     }
                     if (mouse.button == .wheel_up) {
                         if (self._offset > 0) {
                             self._offset -= 1;
-                            self._selected_index = self._offset + row;
+                            self._hovered_index = self.hoverIndexAt(row);
                         }
                         ctx.consumeAndRedraw();
                     }
@@ -179,12 +200,19 @@ pub fn FilesView(comptime Ctx: type) type {
                                 self._offset = @min(self._offset, self._entries.items.len - height);
                             }
                         }
-                        self._selected_index = self._offset + row;
+                        self._hovered_index = self.hoverIndexAt(row);
                         ctx.consumeAndRedraw();
                     }
                     if (mouse.button == .left and mouse.type == .release) {
-                        if (try self.openEntry(self._offset + row)) {
-                            try self.updateMouseShape(ctx);
+                        // The click first retargets the hover to the row
+                        // under the cursor; the hovered entry then becomes
+                        // the selection and opens.
+                        self._hovered_index = self.hoverIndexAt(row);
+                        if (self._hovered_index) |index| {
+                            self._selected_index = index;
+                            if (try self.openEntry(index)) {
+                                try self.updateMouseShape(ctx);
+                            }
                             ctx.consumeAndRedraw();
                         }
                     }
@@ -219,11 +247,18 @@ pub fn FilesView(comptime Ctx: type) type {
             if (self._selected_index >= self._entries.items.len) {
                 self._selected_index = self._entries.items.len - 1;
             }
-            if (self._selected_index < self._offset) {
-                self._offset = @intCast(self._selected_index);
+            if (self._hovered_index) |h| {
+                if (h >= self._entries.items.len) self._hovered_index = null;
             }
-            if (self._selected_index >= self._offset + max_size.height) {
-                self._offset = @intCast(self._selected_index - max_size.height + 1);
+            if (self._snap_selection) {
+                self._snap_selection = false;
+                const height: u32 = max_size.height;
+                const selected: u32 = @intCast(self._selected_index);
+                if (selected < self._offset) {
+                    self._offset = selected;
+                } else if (selected >= self._offset + height) {
+                    self._offset = selected - height + 1;
+                }
             }
 
             const num = @min(max_size.height, self._entries.items.len - self._offset);
@@ -240,7 +275,9 @@ pub fn FilesView(comptime Ctx: type) type {
             const max_bar_width = max_size.width - max_name_width - 6 - 8 - 2;
 
             for (self._entries.items[self._offset .. self._offset + num], 0..) |e, i| {
-                const is_selected = i + self._offset == self._selected_index;
+                const row_index = i + self._offset;
+                const is_selected = row_index == self._selected_index;
+                const is_highlighted = row_index == (self._hovered_index orelse self._selected_index);
                 const prefix = if (is_selected) ">" else " ";
 
                 const name_text = try utils.nameToUtf8(ctx.arena, e.name);
@@ -250,9 +287,9 @@ pub fn FilesView(comptime Ctx: type) type {
                     .{ prefix, name_text },
                 );
                 const style: vaxis.Style = if (e.kind == .directory or e.kind == .parent)
-                    .{ .fg = .{ .index = 3 }, .bold = is_selected }
+                    .{ .fg = .{ .index = 3 }, .bold = is_highlighted }
                 else
-                    .{ .fg = .{ .index = 4 }, .bold = is_selected };
+                    .{ .fg = .{ .index = 4 }, .bold = is_highlighted };
 
                 const entry_widget: vxfw.Text = .{
                     .text = entry_text,
