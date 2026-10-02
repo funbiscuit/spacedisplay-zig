@@ -31,8 +31,10 @@ fi
 
 render() {
   printf '\033[H\033[2J'
-  printf '[%d/%d] %s  |  left/right: navigate  q: quit\n' \
-    "$((cur + 1))" "${#files[@]}" "${files[$cur]}"
+  # pad the counter to the digit count of the total so it does not jump
+  local total=${#files[@]}
+  printf '[%*d/%d] %s  |  left/right: navigate  q: quit\n' \
+    "${#total}" "$((cur + 1))" "$total" "${files[$cur]}"
   local file="${files[$cur]}"
   local max=0 line clean
   while IFS= read -r line; do
