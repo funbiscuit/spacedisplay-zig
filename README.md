@@ -53,6 +53,25 @@ Keyboard controls:
 
 If your terminal supports it, you can also move around with your mouse.
 
+### Non-interactive usage
+
+`--no-ui` scans the given path and exits without drawing anything.
+With `--print` it also dumps the scanned directory tree to stdout — one line
+per directory with its total size:
+
+```shell
+spacedisplay --no-ui --print ~/projects
+```
+
+```
+ 1.2 MiB  projects/
+├── 1.2 MiB  spacedisplay/
+└── 12.3 KiB  docs/
+```
+
+`--max-depth` limits the dump depth and `--min-size` skips directories
+smaller than the given size in bytes, so dumps of huge trees stay manageable.
+
 # Performance
 
 `spacedisplay` is efficient in both speed and memory footprint. So scan speed is mainly

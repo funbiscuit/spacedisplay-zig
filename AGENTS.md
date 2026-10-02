@@ -10,7 +10,7 @@
 scripts/check.sh        # zig fmt --check + zig build + zig build test (run before every commit)
 zig build               # build debug binary into zig-out/bin/spacedisplay
 zig build test          # run all tests
-UPDATE_SNAPSHOTS=1 zig build test   # regenerate UI golden snapshots (when they exist)
+UPDATE_SNAPSHOTS=1 zig build test   # regenerate golden snapshots
 ```
 
 ## Layout
@@ -25,10 +25,14 @@ src/
   core.zig        namespace for the pure logic and data in core/
   core/           pure logic and data (no vaxis, threads, or filesystem)
   runtime.zig     namespace for the drivers in runtime/
-  runtime/        threaded, filesystem-backed drivers of core state machines
+  runtime/        threaded, filesystem-backed drivers of core state machines (Scanner)
   ui.zig          namespace for the widgets in ui/
-  ui/             vaxis vxfw widgets (AppView, FilesView, ProgressBar)
+  ui/             vaxis vxfw widgets, generic over a comptime Ctx
 tests/            end-to-end tests (UI, CLI) against the public API only
+  ui/             per-widget tests + harness.zig (headless draw/events),
+                  fixtures.zig, TestCtx.zig (fake disk + clock), snapshot.zig
+  cli/            binary tests + harness.zig (spawns the built exe), fixtures.zig
+  snapshots/      golden pairs: <name>.txt (layout) + <name>.ansi (styles)
 ```
 
 ## Testing conventions
@@ -52,5 +56,9 @@ tests/            end-to-end tests (UI, CLI) against the public API only
 
 - Every commit must leave `scripts/check.sh` green.
 - Keep commits small and independently reviewable.
+- `core/` imports std only. `ui/` never touches the filesystem or threads;
+  `runtime/` is the only place that spawns threads and reads directories.
+- No runtime polymorphism: views take their data through a comptime Ctx
+  (runtime.Scanner in production, TestCtx in tests).
 - Tests must be deterministic: no network, no terminal required, no reliance on
   wall-clock time, every wait bounded by a timeout.
