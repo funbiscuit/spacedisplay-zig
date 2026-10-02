@@ -62,7 +62,7 @@ pub fn popFocus(host: *ModalHost) !?vxfw.Widget {
     return focusFrom(&event_ctx);
 }
 
-fn focusFrom(event_ctx: *vxfw.EventContext) ?vxfw.Widget {
+pub fn focusFrom(event_ctx: *vxfw.EventContext) ?vxfw.Widget {
     var focused: ?vxfw.Widget = null;
     for (event_ctx.cmds.items) |cmd| {
         switch (cmd) {
