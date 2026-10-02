@@ -33,6 +33,7 @@ pub fn AppView(comptime Ctx: type) type {
             return .{
                 .userdata = self,
                 .eventHandler = typeErasedEventHandler,
+                .captureHandler = typeErasedCaptureHandler,
                 .drawFn = typeErasedDrawFn,
             };
         }
@@ -40,6 +41,20 @@ pub fn AppView(comptime Ctx: type) type {
         fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
             const self: *AppWindow = @ptrCast(@alignCast(ptr));
             return self.handleEvent(ctx, event);
+        }
+
+        fn typeErasedCaptureHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+            _ = ptr;
+            switch (event) {
+                .key_press => |key| {
+                    // Capture phase runs before any focused widget sees the
+                    // key, so global keys work no matter what has focus.
+                    if (key.matches('c', .{ .ctrl = true })) {
+                        ctx.quit = true;
+                    }
+                },
+                else => {},
+            }
         }
 
         fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
@@ -52,12 +67,6 @@ pub fn AppView(comptime Ctx: type) type {
                 .init => {
                     try self._files_view.handleEvent(ctx, event);
                     return ctx.requestFocus(self._files_view.widget());
-                },
-                .key_press => |key| {
-                    if (key.matches('c', .{ .ctrl = true })) {
-                        ctx.quit = true;
-                        return;
-                    }
                 },
                 .focus_in => {
                     return ctx.requestFocus(self._files_view.widget());

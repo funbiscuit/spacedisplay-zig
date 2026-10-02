@@ -30,3 +30,15 @@ test "AppView composes border, files and progress bar" {
     defer rendered.deinit(gpa);
     try snapshot.expectGolden("app_view/compose", rendered);
 }
+
+test "AppView quits on ctrl+c in capture phase" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var app = try AppView(TestCtx).init(gpa, &ctx);
+    defer app.deinit();
+    const widget = app.widget();
+
+    var d = try harness.sendCapture(gpa, widget, harness.keyPressMods('c', .{ .ctrl = true }));
+    defer d.deinit(gpa);
+    try std.testing.expect(d.quit);
+}

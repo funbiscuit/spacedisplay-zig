@@ -160,10 +160,24 @@ pub const Dispatch = struct {
 
 /// Delivers an event to the widget and returns the resulting context flags.
 pub fn send(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
+    return dispatch(gpa, widget, event, false);
+}
+
+/// Delivers an event to the widget's capture handler — the first step of the
+/// real app's event routing, before any focused widget sees the event.
+pub fn sendCapture(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
+    return dispatch(gpa, widget, event, true);
+}
+
+fn dispatch(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event, capture: bool) !Dispatch {
     var cmds: vxfw.CommandList = .empty;
     errdefer cmds.deinit(gpa);
     var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = cmds };
-    try widget.handleEvent(&event_ctx, event);
+    if (capture) {
+        try widget.captureEvent(&event_ctx, event);
+    } else {
+        try widget.handleEvent(&event_ctx, event);
+    }
     var focused: ?vxfw.Widget = null;
     for (event_ctx.cmds.items) |cmd| {
         switch (cmd) {
@@ -181,7 +195,11 @@ pub fn send(gpa: Allocator, widget: vxfw.Widget, event: vxfw.Event) !Dispatch {
 }
 
 pub fn keyPress(codepoint: u21) vxfw.Event {
-    return .{ .key_press = .{ .codepoint = codepoint, .mods = .{} } };
+    return keyPressMods(codepoint, .{});
+}
+
+pub fn keyPressMods(codepoint: u21, mods: vaxis.Key.Modifiers) vxfw.Event {
+    return .{ .key_press = .{ .codepoint = codepoint, .mods = mods } };
 }
 
 pub fn mouse(button: vaxis.Mouse.Button, mtype: vaxis.Mouse.Type, row: i16, col: i16) vxfw.Event {
