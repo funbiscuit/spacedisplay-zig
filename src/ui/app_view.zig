@@ -3,6 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
 const FilesView = @import("files_view.zig").FilesView;
+const ModalHost = @import("ModalHost.zig").ModalHost;
 const ProgressBar = @import("ProgressBar.zig");
 
 const Allocator = std.mem.Allocator;
@@ -16,17 +17,33 @@ pub fn AppView(comptime Ctx: type) type {
         _allocator: Allocator,
         _ctx: *Ctx,
         _files_view: FilesView(Ctx),
+        _modal_host: ModalHost,
 
-        pub fn init(allocator: Allocator, ctx: *Ctx) !AppWindow {
+        pub fn init(allocator: Allocator, ctx: *Ctx) AppWindow {
             return .{
                 ._allocator = allocator,
                 ._ctx = ctx,
                 ._files_view = FilesView(Ctx).init(allocator, ctx),
+                ._modal_host = ModalHost.init(allocator),
             };
         }
 
         pub fn deinit(self: *AppWindow) void {
             self._files_view.deinit();
+            self._modal_host.deinit();
+        }
+
+        /// The root widget of the app: this view wrapped in the modal host.
+        /// Must be called after the AppWindow has reached its final address —
+        /// by-value init copies invalidate the widget pointers captured here.
+        pub fn rootWidget(self: *AppWindow) vxfw.Widget {
+            self._modal_host.setBase(self.widget(), self._files_view.widget());
+            return self._modal_host.widget();
+        }
+
+        /// Push modals here; the host draws them over the whole view.
+        pub fn modalHost(self: *AppWindow) *ModalHost {
+            return &self._modal_host;
         }
 
         pub fn widget(self: *AppWindow) vxfw.Widget {

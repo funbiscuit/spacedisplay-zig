@@ -5,83 +5,21 @@
 //! `one_modal` and `stacked` is exactly the effect of the extra level.
 
 const std = @import("std");
-const vaxis = @import("vaxis");
-const vxfw = vaxis.vxfw;
 const spacedisplay = @import("spacedisplay");
 
+const fixtures = @import("fixtures.zig");
 const harness = @import("harness.zig");
 const snapshot = @import("snapshot.zig");
 
+const Box = fixtures.Box;
 const ModalHost = spacedisplay.ui.ModalHost;
 
 const gpa = std.testing.allocator;
-
-/// A solid rectangle of one grapheme: minimal stand-in for a real view/modal.
-const Box = struct {
-    width: u16,
-    height: u16,
-    grapheme: []const u8,
-    style: vaxis.Style = .{},
-
-    fn widget(self: *Box) vxfw.Widget {
-        return .{
-            .userdata = self,
-            .eventHandler = typeErasedEvent,
-            .drawFn = typeErasedDraw,
-        };
-    }
-
-    fn typeErasedEvent(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-        _ = ptr;
-        _ = ctx;
-        _ = event;
-    }
-
-    fn typeErasedDraw(ptr: *anyopaque, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {
-        const self: *Box = @ptrCast(@alignCast(ptr));
-        const surface = try vxfw.Surface.init(
-            ctx.arena,
-            self.widget(),
-            .{ .width = self.width, .height = self.height },
-        );
-        @memset(surface.buffer, .{ .char = .{ .grapheme = self.grapheme }, .style = self.style });
-        return surface;
-    }
-};
-
-const Allocator = std.mem.Allocator;
 
 fn makeHost(base: *Box) ModalHost {
     var host = ModalHost.init(gpa);
     host.setBase(base.widget(), base.widget());
     return host;
-}
-
-/// Runs push (or pop) with a real EventContext and returns the widget the
-/// host asked to focus, if any.
-fn pushFocus(host: *ModalHost, entry: ModalHost.Entry) !?vxfw.Widget {
-    var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = .empty };
-    defer event_ctx.cmds.deinit(gpa);
-    try host.push(&event_ctx, entry);
-    return focusFrom(&event_ctx);
-}
-
-fn popFocus(host: *ModalHost) !?vxfw.Widget {
-    var event_ctx = vxfw.EventContext{ .io = std.testing.io, .alloc = gpa, .cmds = .empty };
-    defer event_ctx.cmds.deinit(gpa);
-    try host.pop(&event_ctx);
-    return focusFrom(&event_ctx);
-}
-
-fn focusFrom(event_ctx: *vxfw.EventContext) ?vxfw.Widget {
-    var focused: ?vxfw.Widget = null;
-    for (event_ctx.cmds.items) |cmd| {
-        switch (cmd) {
-            .request_focus => |w| focused = w,
-            else => {},
-        }
-    }
-    return focused;
 }
 
 test "idle host renders the base view unchanged" {
@@ -103,7 +41,7 @@ test "one modal dims the base and centers" {
     var host = makeHost(&base);
     defer host.deinit();
 
-    const focused = try pushFocus(&host, .{ .widget = modal.widget() });
+    const focused = try fixtures.pushFocus(&host, .{ .widget = modal.widget() });
     try std.testing.expect(focused.?.eql(modal.widget()));
 
     const rendered = try harness.draw(gpa, host.widget(), 30, 8);
@@ -118,8 +56,8 @@ test "stacked modals keep the lower one visible and dimmed" {
     var host = makeHost(&base);
     defer host.deinit();
 
-    _ = try pushFocus(&host, .{ .widget = big.widget() });
-    _ = try pushFocus(&host, .{ .widget = small.widget() });
+    _ = try fixtures.pushFocus(&host, .{ .widget = big.widget() });
+    _ = try fixtures.pushFocus(&host, .{ .widget = small.widget() });
 
     const rendered = try harness.draw(gpa, host.widget(), 30, 8);
     defer rendered.deinit(gpa);
@@ -133,18 +71,18 @@ test "push focuses the modal, pop walks back and restores the base" {
     var host = makeHost(&base);
     defer host.deinit();
 
-    var focused = (try pushFocus(&host, .{ .widget = first.widget() })).?;
+    var focused = (try fixtures.pushFocus(&host, .{ .widget = first.widget() })).?;
     try std.testing.expect(focused.eql(first.widget()));
-    focused = (try pushFocus(&host, .{ .widget = second.widget() })).?;
+    focused = (try fixtures.pushFocus(&host, .{ .widget = second.widget() })).?;
     try std.testing.expect(focused.eql(second.widget()));
 
-    focused = (try popFocus(&host)).?;
+    focused = (try fixtures.popFocus(&host)).?;
     try std.testing.expect(focused.eql(first.widget()));
-    focused = (try popFocus(&host)).?;
+    focused = (try fixtures.popFocus(&host)).?;
     try std.testing.expect(focused.eql(base.widget()));
 
     // Popping an empty stack does nothing and asks for no focus.
-    try std.testing.expect((try popFocus(&host)) == null);
+    try std.testing.expect((try fixtures.popFocus(&host)) == null);
     try std.testing.expect(!host.active());
 }
 
@@ -153,7 +91,7 @@ test "shield pops on outside press and consumes every mouse event" {
     var modal = Box{ .width = 4, .height = 1, .grapheme = "M" };
     var host = makeHost(&base);
     defer host.deinit();
-    _ = try pushFocus(&host, .{ .widget = modal.widget() });
+    _ = try fixtures.pushFocus(&host, .{ .widget = modal.widget() });
     const shield = host.shieldWidget();
 
     // Motion is swallowed without dismissing.
@@ -180,7 +118,7 @@ test "shield keeps a modal that opted out of outside dismissal" {
     var modal = Box{ .width = 4, .height = 1, .grapheme = "M" };
     var host = makeHost(&base);
     defer host.deinit();
-    _ = try pushFocus(&host, .{ .widget = modal.widget(), .dismiss_on_click_outside = false });
+    _ = try fixtures.pushFocus(&host, .{ .widget = modal.widget(), .dismiss_on_click_outside = false });
     const shield = host.shieldWidget();
 
     var d = try harness.send(gpa, shield, harness.mouse(.left, .press, 0, 0));

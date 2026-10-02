@@ -81,10 +81,10 @@ pub fn run(init: std.process.Init) !u8 {
 
     const window = try allocator.create(AppView(Scanner));
     defer allocator.destroy(window);
-    window.* = try AppView(Scanner).init(allocator, &scanner);
+    window.* = AppView(Scanner).init(allocator, &scanner);
     defer window.deinit();
 
-    try app.run(window.widget(), .{});
+    try app.run(window.rootWidget(), .{});
 
     return 0;
 }

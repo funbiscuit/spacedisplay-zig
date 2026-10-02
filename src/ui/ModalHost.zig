@@ -48,6 +48,7 @@ pub fn widget(self: *ModalHost) vxfw.Widget {
     return .{
         .userdata = self,
         .eventHandler = typeErasedEventHandler,
+        .captureHandler = typeErasedCaptureHandler,
         .drawFn = typeErasedDrawFn,
     };
 }
@@ -93,6 +94,17 @@ fn typeErasedEventHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.
             if (self._base) |base| return base.handleEvent(ctx, event);
         },
         else => {},
+    }
+}
+
+fn typeErasedCaptureHandler(ptr: *anyopaque, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
+    const self: *ModalHost = @ptrCast(@alignCast(ptr));
+    // While a modal is open the base view is composited away and therefore
+    // not on the focus path, so its capture handlers would never run; the
+    // host forwards capture events to them, keeping global keys alive. When
+    // idle the base is on the path and receives capture events itself.
+    if (self.active()) {
+        if (self._base) |base| return base.captureEvent(ctx, event);
     }
 }
 

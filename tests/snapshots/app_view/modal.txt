@@ -1,0 +1,12 @@
+╭ /base ───────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM                   │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+ 3 files                                1.31 KiB
