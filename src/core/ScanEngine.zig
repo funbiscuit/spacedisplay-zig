@@ -3,6 +3,7 @@
 //! the listing back through applyListing. Mutex-guarded, thread-safe.
 
 const std = @import("std");
+const format = @import("format.zig");
 const Tree = @import("Tree.zig");
 const queue = @import("queue.zig");
 
@@ -12,6 +13,14 @@ const Mutex = std.Thread.Mutex;
 const ScanEngine = @This();
 
 pub const EntryId = Tree.EntryId;
+
+/// Options for the text dump produced by dump().
+pub const DumpOptions = struct {
+    /// Maximum tree depth to print (root is depth 0).
+    max_depth: u32 = std.math.maxInt(u32),
+    /// Skip directories smaller than this many bytes.
+    min_size: u64 = 0,
+};
 
 pub const MountStats = struct {
     /// Total size of partition
@@ -353,6 +362,94 @@ pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)
         allocator.free(entry.name);
     }
     entries.clearAndFree(allocator);
+}
+
+/// Prints the tree: one line per directory, size right-aligned in a
+/// column, nested with box-drawing glyphs in name order. Files are not
+/// stored in the tree and are not printed.
+pub fn dump(
+    self: *ScanEngine,
+    allocator: Allocator,
+    writer: *std.Io.Writer,
+    opts: DumpOptions,
+) !void {
+    self._mutex.lock();
+    defer self._mutex.unlock();
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var width: usize = 0;
+    try self.measureDumpWidth(arena.allocator(), .root, 0, opts, &width);
+
+    const root = self._tree.getNode(.root);
+    const size_str = try sizeLabel(arena.allocator(), root.total_size);
+    try writer.print("{s: >[2]}  {s}/\n", .{ size_str, self._scanned_path, width });
+
+    try self.dumpRec(arena.allocator(), writer, .root, "", 0, opts, width);
+}
+
+fn measureDumpWidth(
+    self: *ScanEngine,
+    arena: Allocator,
+    id: EntryId,
+    depth: u32,
+    opts: DumpOptions,
+    width: *usize,
+) !void {
+    const node = self._tree.getNode(id);
+    const size_str = try sizeLabel(arena, node.total_size);
+    if (size_str.len > width.*) {
+        width.* = size_str.len;
+    }
+    if (depth >= opts.max_depth) {
+        return;
+    }
+    var child = node.firstChild();
+    while (child) |child_id| {
+        const child_node = self._tree.getNode(child_id);
+        if (child_node.total_size >= opts.min_size) {
+            try self.measureDumpWidth(arena, child_id, depth + 1, opts, width);
+        }
+        child = child_node.nextNode();
+    }
+}
+
+fn dumpRec(
+    self: *ScanEngine,
+    arena: Allocator,
+    writer: *std.Io.Writer,
+    id: EntryId,
+    prefix: []const u8,
+    depth: u32,
+    opts: DumpOptions,
+    width: usize,
+) !void {
+    const node = self._tree.getNode(id);
+    var child = node.firstChild();
+    while (child) |child_id| {
+        const child_node = self._tree.getNode(child_id);
+        const is_last = child_node.nextNode() == null;
+        if (depth + 1 <= opts.max_depth and child_node.total_size >= opts.min_size) {
+            const size_str = try sizeLabel(arena, child_node.total_size);
+            const glyph: []const u8 = if (is_last) "└── " else "├── ";
+            try writer.print("{s: >[4]}  {s}{s}{s}/\n", .{
+                size_str, prefix, glyph, self._tree.getNodeName(child_node), width,
+            });
+            if (depth + 1 < opts.max_depth) {
+                const child_prefix = try std.mem.concat(arena, u8, &.{
+                    prefix, if (is_last) "    " else "│   ",
+                });
+                try self.dumpRec(arena, writer, child_id, child_prefix, depth + 1, opts, width);
+            }
+        }
+        child = child_node.nextNode();
+    }
+}
+
+fn sizeLabel(arena: Allocator, size: i64) ![]const u8 {
+    const padded = try format.formatSize(arena, @intCast(@max(0, size)), 0);
+    return std.mem.trimRight(u8, padded, " ");
 }
 
 /// Merges tree children with a fresh listing taken by the caller; queues a

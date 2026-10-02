@@ -11,10 +11,13 @@ const Allocator = std.mem.Allocator;
 
 pub fn run(allocator: Allocator) !u8 {
     const params = comptime clap.parseParamsComptime(
-        \\-h, --help             Display this help and exit.
-        \\--no-ui                Run without UI. Performs scan of specified path and prints results
-        \\-V, --version          Print version information and quit
-        \\<str>                  Path to scan.
+        \\-h, --help                    Display this help and exit.
+        \\--no-ui                       Run without UI. Performs scan of specified path and exits
+        \\--print                       With --no-ui: print scanned tree with directory sizes to stdout
+        \\--max-depth <u32>             With --print: limit dump depth (default: unlimited)
+        \\--min-size <u64>              With --print: skip directories smaller than this size in bytes
+        \\-V, --version                 Print version information and quit
+        \\<str>                         Path to scan.
         \\
     );
 
@@ -53,8 +56,12 @@ pub fn run(allocator: Allocator) !u8 {
         dir.close();
     }
 
-    if (res.args.@"no-ui" != 0) {
-        try run_without_ui(allocator, scanned_path);
+    if (res.args.@"no-ui" != 0 or res.args.print != 0) {
+        try run_without_ui(allocator, scanned_path, .{
+            .print = res.args.print != 0,
+            .max_depth = res.args.@"max-depth" orelse std.math.maxInt(u32),
+            .min_size = res.args.@"min-size" orelse 0,
+        });
         return 0;
     }
 
@@ -77,13 +84,29 @@ pub fn run(allocator: Allocator) !u8 {
     return 0;
 }
 
-fn run_without_ui(allocator: Allocator, scanned_path: []const u8) !void {
+fn run_without_ui(allocator: Allocator, scanned_path: []const u8, opts: PrintOptions) !void {
     var scanner = try Scanner.init(allocator, scanned_path);
     defer scanner.deinit(allocator);
     while (scanner.isScanning()) {
         std.Thread.sleep(100_000);
     }
+
+    if (opts.print) {
+        var stdout_buf: [4096]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+        try scanner.dump(allocator, &stdout_writer.interface, .{
+            .max_depth = opts.max_depth,
+            .min_size = opts.min_size,
+        });
+        try stdout_writer.interface.flush();
+    }
 }
+
+const PrintOptions = struct {
+    print: bool,
+    max_depth: u32,
+    min_size: u64,
+};
 
 fn printVersion(file: std.fs.File) !void {
     var buf: [1024]u8 = undefined;

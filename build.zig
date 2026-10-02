@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
 
     const test_options = b.addOptions();
     test_options.addOption([]const u8, "snapshot_dir", b.pathFromRoot("tests/snapshots"));
+    test_options.addOptionPath("exe_path", exe.getEmittedBin());
     tests_mod.addImport("test_options", test_options.createModule());
 
     const lib_tests = b.addTest(.{ .root_module = lib_mod });

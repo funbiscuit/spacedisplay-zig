@@ -2,4 +2,5 @@
 
 test {
     _ = @import("ui.zig");
+    _ = @import("cli.zig");
 }

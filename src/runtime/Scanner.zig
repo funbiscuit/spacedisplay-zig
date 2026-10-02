@@ -11,6 +11,7 @@ const Scanner = @This();
 pub const EntryId = ScanEngine.EntryId;
 pub const ScanStats = ScanEngine.ScanStats;
 pub const ListDirEntry = ScanEngine.ListDirEntry;
+pub const DumpOptions = ScanEngine.DumpOptions;
 
 _engine: *ScanEngine,
 _thread: std.Thread,
@@ -76,6 +77,11 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: EntryId) !std.Array
     const dir_path = try self._engine.pathOf(arena.allocator(), dir_id);
     const entries = try scanSingleDir(arena.allocator(), dir_path);
     return self._engine.listDirMerged(allocator, arena.allocator(), dir_id, entries);
+}
+
+/// Prints the scanned tree as `<size>\t<path>` lines.
+pub fn dump(self: *Scanner, allocator: Allocator, writer: *std.Io.Writer, opts: DumpOptions) !void {
+    return self._engine.dump(allocator, writer, opts);
 }
 
 fn workerFunc(engine: *ScanEngine, allocator: Allocator) void {
