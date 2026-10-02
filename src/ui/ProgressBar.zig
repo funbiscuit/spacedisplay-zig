@@ -5,7 +5,7 @@ const vxfw = vaxis.vxfw;
 const ScanEngine = @import("../core/ScanEngine.zig");
 
 const FilesView = @import("files_view.zig").FilesView;
-const utils = @import("utils.zig");
+const format = @import("../core/format.zig");
 
 const Allocator = std.mem.Allocator;
 const ProgressBar = @This();
@@ -146,15 +146,15 @@ fn createBars(arena: Allocator, stats: ScanEngine.ScanStats) ![]BarItem {
     var remaining_weight: f64 = 0;
 
     if (stats.current_dir_size != 0 and stats.current_dir_size != stats.scanned_size) {
-        scanned_dir_str = try utils.formatSize(arena, stats.current_dir_size, 0);
+        scanned_dir_str = try format.formatSize(arena, stats.current_dir_size, 0);
         scanned_dir_weight = @floatFromInt(stats.current_dir_size);
         const remaining = stats.scanned_size -| stats.current_dir_size;
         if (remaining > 0) {
             remaining_weight = @floatFromInt(remaining);
-            remaining_str = try utils.formatSize(arena, remaining, 0);
+            remaining_str = try format.formatSize(arena, remaining, 0);
         }
     } else if (stats.scanned_size > 0) {
-        scanned_dir_str = try utils.formatSize(arena, stats.scanned_size, 0);
+        scanned_dir_str = try format.formatSize(arena, stats.scanned_size, 0);
         scanned_dir_weight = @floatFromInt(stats.scanned_size);
     }
 
@@ -176,14 +176,14 @@ fn createBars(arena: Allocator, stats: ScanEngine.ScanStats) ![]BarItem {
     }
     if (stats.unknown_size > 0) {
         try children.append(arena, .{
-            .label = try utils.formatSize(arena, stats.unknown_size, 0),
+            .label = try format.formatSize(arena, stats.unknown_size, 0),
             .weight = if (stats.is_mount_point) @floatFromInt(stats.unknown_size) else 1,
             .style = .{ .fg = .{ .index = 8 }, .bg = .{ .index = 7 } },
         });
     }
     if (stats.available_size > 0) {
         try children.append(arena, .{
-            .label = try utils.formatSize(arena, stats.available_size, 0),
+            .label = try format.formatSize(arena, stats.available_size, 0),
             .weight = if (stats.is_mount_point) @floatFromInt(stats.available_size) else 1,
             .style = .{ .bg = .{ .index = 2 } },
         });

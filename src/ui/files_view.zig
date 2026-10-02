@@ -3,6 +3,7 @@ const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
 
 const utils = @import("utils.zig");
+const format = @import("../core/format.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -263,7 +264,7 @@ pub fn FilesView(comptime Ctx: type) type {
                 });
 
                 if (e.kind != .parent) {
-                    const size_text = try utils.formatSize(ctx.arena, e.size, 4);
+                    const size_text = try format.formatSize(ctx.arena, e.size, 4);
                     const size_widget: vxfw.Text = .{
                         .text = size_text,
                         .style = style,
