@@ -57,6 +57,7 @@ pub const DirEntry = struct {
     pub const Kind = enum {
         directory,
         file,
+        sym_link,
     };
 };
 
@@ -70,6 +71,7 @@ pub const ListDirEntry = struct {
         parent,
         directory,
         file,
+        sym_link,
     };
 
     fn lessThan(_: void, a: ListDirEntry, b: ListDirEntry) bool {
@@ -323,7 +325,9 @@ pub fn applyListing(
             .directory => if (entry.can_scan) {
                 try dir_names.append(arena, entry.name);
             },
-            .file => {
+            // symlinks count as size-0 files: unlink removes the link,
+            // never the target
+            .file, .sym_link => {
                 files_size += entry.size;
                 files_count += 1;
             },
@@ -774,6 +778,15 @@ pub fn listDirMerged(
                     .name = try allocator.dupe(u8, entry.name),
                     .size = entry.size,
                     .kind = .file,
+                });
+            },
+            .sym_link => {
+                files_actual += 1;
+                try root_children.append(allocator, .{
+                    .id = null,
+                    .name = try allocator.dupe(u8, entry.name),
+                    .size = 0,
+                    .kind = .sym_link,
                 });
             },
         }

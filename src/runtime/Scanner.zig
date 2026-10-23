@@ -267,6 +267,15 @@ fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) !DirListing {
                     .kind = .file,
                 });
             },
+            // no stat: it would follow the link, and the link itself is
+            // what deletions act on
+            .sym_link => {
+                try entries.append(arena, .{
+                    .name = name,
+                    .size = 0,
+                    .kind = .sym_link,
+                });
+            },
             else => {},
         }
     }
@@ -508,6 +517,31 @@ test "Scanner records a failure when a delete misses" {
     try std.testing.expect(msg != null);
     try std.testing.expect(std.mem.startsWith(u8, msg.?, "Failed to delete 'no-such.bin'"));
     try std.testing.expect(fixture.scanner.takeError(&buf) == null);
+}
+
+test "Scanner deletes a directory whose contents are symlinks" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    const base = try tmpPath(std.testing.allocator, &fixture.tmp);
+    defer std.testing.allocator.free(base);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const stuck = try std.fmt.bufPrint(&buf, "{s}/a/stuck", .{base});
+    try Io.Dir.cwd().createDir(std.testing.io, stuck, .default_dir);
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link = try std.fmt.bufPrint(&link_buf, "{s}/a/stuck/LICENSE", .{base});
+    const linkz = try std.testing.allocator.dupeZ(u8, link);
+    defer std.testing.allocator.free(linkz);
+    try std.testing.expectEqual(@as(c_int, 0), std.c.symlink("../nowhere", linkz));
+
+    try fixture.scanner.requestDelete(std.testing.allocator, .root, "a");
+    // converges instead of cycling
+    try fixture.scanner.waitIdle(10_000);
+
+    var ebuf: [256]u8 = undefined;
+    try std.testing.expect(fixture.scanner.takeError(&ebuf) == null);
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().openDir(std.testing.io, stuck, .{}));
 }
 
 test "Scanner deinit stops a running scan" {
