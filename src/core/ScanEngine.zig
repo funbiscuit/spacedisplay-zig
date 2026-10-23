@@ -102,6 +102,13 @@ pub const FileJob = struct {
     name: []const u8,
 };
 
+pub const DirJob = struct {
+    id: EntryId,
+    /// Consecutive rounds this job has already run that removed nothing;
+    /// reset by a round that deletes something.
+    no_progress_rounds: u32 = 0,
+};
+
 /// One unit of worker work. Every variant starts by resolving its
 /// directory from the tree and taking a fresh listing of it.
 pub const Job = union(enum) {
@@ -109,7 +116,7 @@ pub const Job = union(enum) {
     /// Deletes the directory in rounds: each round removes what it can,
     /// queues jobs for what survives, and updates the tree; the
     /// directory itself goes once nothing is left.
-    delete_dir: EntryId,
+    delete_dir: DirJob,
     delete_file: FileJob,
 };
 
@@ -242,7 +249,7 @@ pub fn nextJob(self: *ScanEngine, allocator: Allocator) ?Job {
         // so applying another listing would adjust the counters again.
         const target: EntryId = switch (job) {
             .scan => |scan| scan.id,
-            .delete_dir => |id| id,
+            .delete_dir => |dir| dir.id,
             .delete_file => |file| file.parent,
         };
         if (self.isAttachedLocked(target)) {
@@ -470,7 +477,7 @@ pub fn requestDelete(self: *ScanEngine, allocator: Allocator, parent: EntryId, n
         self._mutex.lockUncancelable(self._io);
         defer self._mutex.unlock(self._io);
         if (self.findChildDirLocked(parent, name)) |id| {
-            _ = try self.queueUserJobLocked(.{ .delete_dir = id });
+            _ = try self.queueUserJobLocked(.{ .delete_dir = .{ .id = id } });
             return;
         }
     }
@@ -489,29 +496,50 @@ pub fn pushJobs(self: *ScanEngine, allocator: Allocator, jobs: []const Job) Allo
     try self._work_stack.appendSlice(allocator, jobs);
 }
 
-/// `remaining` is what survived one deletion round inside `id`: updates
-/// the tree and queues a resume job for `id` plus a delete job per
-/// surviving subdirectory — children empty out before `id` is revisited.
+const max_no_progress_rounds: u32 = 2;
+
+/// `remaining` is what survived one deletion round inside `job.id`, and
+/// `deleted_any` whether the round removed anything at all: updates the
+/// tree and queues a resume job for `job.id` plus a delete job per
+/// surviving subdirectory — children empty out before `job.id` is
+/// revisited. Fruitless rounds count up in the requeued job; once they
+/// reach max_no_progress_rounds the directory is abandoned with a
+/// recorded error instead of requeueing forever.
 pub fn applyDeleteRound(
     self: *ScanEngine,
     allocator: Allocator,
     arena: Allocator,
-    id: EntryId,
+    job: DirJob,
     remaining: []const DirEntry,
+    deleted_any: bool,
 ) Allocator.Error!void {
-    try self.applyListing(allocator, arena, id, remaining);
+    try self.applyListing(allocator, arena, job.id, remaining);
+
+    self._mutex.lockUncancelable(self._io);
+
+    const no_progress_rounds = if (deleted_any) 0 else job.no_progress_rounds + 1;
+    if (no_progress_rounds >= max_no_progress_rounds) {
+        // pool strings live until deinit, so the name is safe to use
+        // after the unlock
+        const name = self._tree.getNodeName(self._tree.getNode(job.id));
+        self._mutex.unlock(self._io);
+        self.recordDeleteError(name, error.DirNotEmpty);
+        return;
+    }
 
     var jobs: std.ArrayList(Job) = .empty;
     defer jobs.deinit(allocator);
-    try jobs.append(allocator, .{ .delete_dir = id });
+    try jobs.append(allocator, .{ .delete_dir = .{
+        .id = job.id,
+        .no_progress_rounds = no_progress_rounds,
+    } });
 
-    self._mutex.lockUncancelable(self._io);
     for (remaining) |entry| {
         if (entry.kind != .directory) continue;
-        const child = self.findChildDirLocked(id, entry.name) orelse continue;
+        const child = self.findChildDirLocked(job.id, entry.name) orelse continue;
         // OOM here keeps the resume job queued, so the round still
         // converges; the missed child is picked up on the next visit
-        jobs.append(allocator, .{ .delete_dir = child }) catch break;
+        jobs.append(allocator, .{ .delete_dir = .{ .id = child } }) catch break;
     }
     self._mutex.unlock(self._io);
 

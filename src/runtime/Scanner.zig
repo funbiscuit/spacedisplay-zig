@@ -143,7 +143,7 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
         // which are as fatal as they are for scans.
         switch (job) {
             .scan => |scan| try runScanJob(engine, allocator, io, arena.allocator(), scan),
-            .delete_dir => |id| try runDeleteDirJob(engine, allocator, io, arena.allocator(), id),
+            .delete_dir => |dir| try runDeleteDirJob(engine, allocator, io, arena.allocator(), dir),
             .delete_file => |file| {
                 defer allocator.free(file.name);
                 try runDeleteFileJob(engine, allocator, io, arena.allocator(), file);
@@ -172,24 +172,32 @@ fn runScanJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocato
     try engine.applyListing(allocator, arena, scan.id, listing.entries);
 }
 
-fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, id: EntryId) !void {
-    const dir_path = try engine.pathOf(arena, id);
+fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, dir: ScanEngine.DirJob) !void {
+    const dir_path = try engine.pathOf(arena, dir.id);
     const listing = try scanSingleDir(io, arena, dir_path);
 
     var remaining: std.ArrayList(ScanEngine.DirEntry) = .empty;
+    var deleted_any = false;
     for (listing.entries) |entry| {
         const target = try std.fs.path.join(arena, &.{ dir_path, entry.name });
-        if (platform.deletePath(Io.Dir.cwd(), io, target)) {} else |err| switch (err) {
+        if (platform.deletePath(Io.Dir.cwd(), io, target)) {
+            deleted_any = true;
+        } else |err| switch (err) {
             // still has contents; its own delete job empties it later
             error.DirNotEmpty => try remaining.append(arena, entry),
             // vanished under us — counts as deleted
-            error.FileNotFound => {},
-            else => engine.recordDeleteError(entry.name, err),
+            error.FileNotFound => deleted_any = true,
+            else => {
+                engine.recordDeleteError(entry.name, err);
+                // still on disk: kept in the round's listing so the tree
+                // does not drop it, and the round counts as progress-less
+                try remaining.append(arena, entry);
+            },
         }
     }
 
     if (remaining.items.len > 0) {
-        try engine.applyDeleteRound(allocator, arena, id, remaining.items);
+        try engine.applyDeleteRound(allocator, arena, dir, remaining.items, deleted_any);
         return;
     }
 
@@ -198,7 +206,7 @@ fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: All
         else => engine.recordDeleteError(std.fs.path.basename(dir_path), err),
     };
     // the parent's fresh listing drops this directory from the tree
-    if (engine.getParentId(id)) |parent| {
+    if (engine.getParentId(dir.id)) |parent| {
         try engine.pushJobs(allocator, &.{.{ .scan = .{ .id = parent } }});
     }
 }
@@ -542,6 +550,45 @@ test "Scanner deletes a directory whose contents are symlinks" {
     var ebuf: [256]u8 = undefined;
     try std.testing.expect(fixture.scanner.takeError(&ebuf) == null);
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().openDir(std.testing.io, stuck, .{}));
+}
+
+test "delete rounds give up when a directory cannot empty" {
+    // root ignores directory permissions, so the lock would not hold
+    if (std.os.linux.getuid() == 0) return error.SkipZigTest;
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    try writeFixtureFile(fixture.tmp.dir, "locked/keep.bin", 10);
+    const base = try tmpPath(std.testing.allocator, &fixture.tmp);
+    defer std.testing.allocator.free(base);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const locked = try std.fmt.bufPrint(&buf, "{s}/locked", .{base});
+    const lockedz = try std.testing.allocator.dupeZ(u8, locked);
+    defer std.testing.allocator.free(lockedz);
+    // no write permission: nothing inside can be unlinked
+    try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(lockedz, 0o555));
+    defer {
+        // restore write permission so the TmpDir cleanup can delete the tree
+        std.testing.expectEqual(@as(c_int, 0), std.c.chmod(lockedz, 0o755)) catch {};
+    }
+
+    // a listing teaches the tree about the new directory (and its file)
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    try fixture.scanner.waitIdle(10_000);
+
+    try fixture.scanner.requestDelete(std.testing.allocator, .root, "locked");
+    // terminates instead of cycling, and the failure is reported
+    try fixture.scanner.waitIdle(10_000);
+
+    var ebuf: [256]u8 = undefined;
+    const msg = fixture.scanner.takeError(&ebuf);
+    try std.testing.expect(msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg.?, "locked") != null);
+
+    const stats = try fixture.tmp.dir.statFile(std.testing.io, "locked/keep.bin", .{});
+    try std.testing.expectEqual(@as(u64, 10), stats.size);
 }
 
 test "Scanner deinit stops a running scan" {
