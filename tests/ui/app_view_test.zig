@@ -1,6 +1,7 @@
 //! AppView golden test: border, file list and progress bar composition.
 
 const std = @import("std");
+const vaxis = @import("vaxis");
 const spacedisplay = @import("spacedisplay");
 
 const TestCtx = @import("TestCtx.zig").TestCtx;
@@ -62,4 +63,28 @@ test "AppView renders a modal over the whole view" {
     const rendered = try harness.draw(gpa, widget, 80, 12);
     defer rendered.deinit(gpa);
     try snapshot.expectGolden("app_view/modal", rendered);
+}
+
+test "Delete key opens the confirm dialog over the whole view" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var app = AppView(TestCtx).init(gpa, &ctx);
+    defer app.deinit();
+    const widget = app.rootWidget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+    d = try harness.send(gpa, app._files_view.widget(), harness.tick);
+    d.deinit(gpa);
+
+    // selection starts on "big"; the Delete key opens the real dialog on
+    // the app's modal host, and nothing is deleted before confirmation
+    d = try harness.send(gpa, app._files_view.widget(), harness.keyPress(vaxis.Key.delete));
+    d.deinit(gpa);
+    try std.testing.expect(app.modalHost().active());
+    try std.testing.expectEqual(@as(usize, 0), ctx.delete_requests.items.len);
+
+    const rendered = try harness.draw(gpa, widget, 80, 12);
+    defer rendered.deinit(gpa);
+    try snapshot.expectGolden("app_view/delete_dialog", rendered);
 }

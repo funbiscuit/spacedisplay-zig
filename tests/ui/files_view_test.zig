@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const vaxis = @import("vaxis");
+const spacedisplay = @import("spacedisplay");
 
 const TestCtx = @import("TestCtx.zig").TestCtx;
 const fixtures = @import("fixtures.zig");
@@ -202,6 +203,102 @@ test "FilesView drops the hover highlight on keyboard navigation" {
     const rendered = try harness.draw(gpa, widget, 80, 12);
     defer rendered.deinit(gpa);
     try snapshot.expectGolden("files_view/hover_dropped", rendered);
+}
+
+test "delete key confirms before Ctx sees a request" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    var host = spacedisplay.ui.ModalHost.init(gpa);
+    defer host.deinit();
+    host.setBase(view.widget(), view.widget());
+    view.setModalHost(&host);
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+
+    // selection sits on "big": the dialog opens, nothing is queued yet
+    d = try harness.send(gpa, widget, harness.keyPress(Key.delete));
+    d.deinit(gpa);
+    try std.testing.expect(host.active());
+    try std.testing.expectEqual(@as(usize, 0), ctx.delete_requests.items.len);
+
+    // 'n' cancels: the dialog closes without a request
+    d = try harness.send(gpa, view._confirm_dialog.?.widget(), harness.keyPress('n'));
+    d.deinit(gpa);
+    try std.testing.expect(!host.active());
+    try std.testing.expectEqual(@as(usize, 0), ctx.delete_requests.items.len);
+
+    // 'y' confirms: one request for the pressed-time dir and entry name
+    d = try harness.send(gpa, widget, harness.keyPress(Key.delete));
+    d.deinit(gpa);
+    d = try harness.send(gpa, view._confirm_dialog.?.widget(), harness.keyPress('y'));
+    d.deinit(gpa);
+    try std.testing.expect(!host.active());
+    try std.testing.expectEqual(@as(usize, 1), ctx.delete_requests.items.len);
+    try std.testing.expect(view._opened_dir_id.eql(ctx.delete_requests.items[0].parent));
+    try std.testing.expectEqualStrings("big", ctx.delete_requests.items[0].name);
+}
+
+test "delete request carries the dir that was open at key-press time" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    var host = spacedisplay.ui.ModalHost.init(gpa);
+    defer host.deinit();
+    host.setBase(view.widget(), view.widget());
+    view.setModalHost(&host);
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+
+    // open "sub"; its only entry is "sub.bin"
+    d = try harness.send(gpa, widget, harness.keyPress(Key.down));
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.keyPress(Key.enter));
+    d.deinit(gpa);
+    const sub_id = view._opened_dir_id;
+
+    d = try harness.send(gpa, widget, harness.keyPress(Key.delete));
+    d.deinit(gpa);
+    d = try harness.send(gpa, view._confirm_dialog.?.widget(), harness.keyPress('y'));
+    d.deinit(gpa);
+
+    try std.testing.expectEqual(@as(usize, 1), ctx.delete_requests.items.len);
+    try std.testing.expect(sub_id.eql(ctx.delete_requests.items[0].parent));
+    try std.testing.expectEqualStrings("sub.bin", ctx.delete_requests.items[0].name);
+}
+
+test "delete key ignores the parent row" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    var host = spacedisplay.ui.ModalHost.init(gpa);
+    defer host.deinit();
+    host.setBase(view.widget(), view.widget());
+    view.setModalHost(&host);
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+
+    // selection starts on "." (index 0): no dialog, no request
+    view._selected_index = 0;
+    d = try harness.send(gpa, widget, harness.keyPress(Key.delete));
+    d.deinit(gpa);
+    try std.testing.expect(!host.active());
+    try std.testing.expectEqual(@as(usize, 0), ctx.delete_requests.items.len);
 }
 
 test "FilesView falls back to the parent when the opened dir is deleted" {

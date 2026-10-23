@@ -4,14 +4,14 @@ const vxfw = vaxis.vxfw;
 
 const utils = @import("utils.zig");
 const format = @import("../core/format.zig");
+const ConfirmDialog = @import("ConfirmDialog.zig").ConfirmDialog;
+const ModalHost = @import("ModalHost.zig").ModalHost;
 
 const Allocator = std.mem.Allocator;
 
-/// Directory listing widget. Generic over Ctx (runtime.Scanner in prod,
-/// scripted context in tests), which provides EntryId/ListDirEntry types
-/// and the data methods called below. `listDir` must fail with
-/// `error.DirMissing` when the directory cannot be opened; the view
-/// recovers by falling back to the parent.
+/// Directory listing widget, generic over Ctx (runtime.Scanner in prod,
+/// TestCtx in tests). Ctx contract: listDir may fail DirMissing (view
+/// falls back to the parent); requestDelete queues deletions.
 pub fn FilesView(comptime Ctx: type) type {
     return struct {
         const Self = @This();
@@ -34,6 +34,9 @@ pub fn FilesView(comptime Ctx: type) type {
         _last_height: ?u16 = null,
         _last_update_time: i64 = 0,
         _entries: std.ArrayList(Ctx.ListDirEntry) = .empty,
+        /// Null until setModalHost wires it; without a host the Delete
+        /// key is a no-op (bare views in per-widget tests).
+        _confirm_dialog: ?ConfirmDialog = null,
 
         pub fn init(allocator: Allocator, ctx: *Ctx) Self {
             return .{
@@ -42,7 +45,15 @@ pub fn FilesView(comptime Ctx: type) type {
             };
         }
 
+        /// Wires the confirmation dialog to the host. Call after the view
+        /// and its owner reached their final addresses: the dialog keeps a
+        /// host pointer that by-value copies would invalidate.
+        pub fn setModalHost(self: *Self, host: *ModalHost) void {
+            self._confirm_dialog = ConfirmDialog.init(self._allocator, host);
+        }
+
         pub fn deinit(self: *Self) void {
+            if (self._confirm_dialog) |*dialog| dialog.deinit();
             Ctx.deinitListDir(self._allocator, &self._entries);
         }
 
@@ -112,6 +123,54 @@ pub fn FilesView(comptime Ctx: type) type {
             }
 
             return scanned_changed;
+        }
+
+        /// One pending delete confirmation: what the dialog was asked
+        /// about. `dir` is the listing the entry came from, captured at
+        /// key-press time — the opened dir may change (or vanish) while
+        /// the dialog is up.
+        const DeleteRequest = struct {
+            view: *Self,
+            dir: Ctx.EntryId,
+            name: []u8,
+        };
+
+        fn deleteSelectedEntry(self: *Self, ctx: *vxfw.EventContext) !void {
+            const dialog: *ConfirmDialog = if (self._confirm_dialog) |*d| d else return;
+            if (self._selected_index >= self._entries.items.len) return;
+            const entry = self._entries.items[self._selected_index];
+            // "." and ".." navigate; they are not deletion targets
+            if (entry.kind == .parent) return;
+
+            // The listing keeps refreshing while the dialog is open (ticks
+            // still fire), so the name — not the index — is the stable
+            // handle.
+            const name = try self._allocator.dupe(u8, entry.name);
+            const req = try self._allocator.create(DeleteRequest);
+            req.* = .{ .view = self, .dir = self._opened_dir_id, .name = name };
+            errdefer self.freeDeleteRequest(req);
+
+            const question = try std.fmt.allocPrint(self._allocator, "Delete '{s}'?", .{entry.name});
+            defer self._allocator.free(question);
+
+            dialog.show(ctx, "Confirm Deletion", question, req, onDialogResult) catch |err| switch (err) {
+                // unreachable while a modal is open: the base is composited
+                // away and never sees keys; stay leak-free regardless
+                error.AlreadyShowing => self.freeDeleteRequest(req),
+                else => return err,
+            };
+        }
+
+        fn freeDeleteRequest(self: *Self, req: *DeleteRequest) void {
+            self._allocator.free(req.name);
+            self._allocator.destroy(req);
+        }
+
+        fn onDialogResult(userdata: ?*anyopaque, result: ConfirmDialog.Result) anyerror!void {
+            const req: *DeleteRequest = @ptrCast(@alignCast(userdata orelse return));
+            defer req.view.freeDeleteRequest(req);
+            if (result != .confirmed) return;
+            try req.view._ctx.requestDelete(req.view._allocator, req.dir, req.name);
         }
 
         fn openEntry(self: *Self, index: usize) !bool {
@@ -186,6 +245,10 @@ pub fn FilesView(comptime Ctx: type) type {
                         if (try self.openEntry(self._selected_index)) {
                             ctx.redraw = true;
                         }
+                        return ctx.consumeEvent();
+                    }
+                    if (key.matches(vaxis.Key.delete, .{})) {
+                        try self.deleteSelectedEntry(ctx);
                         return ctx.consumeEvent();
                     }
                     if (key.matches(vaxis.Key.home, .{})) {

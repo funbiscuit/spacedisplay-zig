@@ -37,6 +37,7 @@ pub fn AppView(comptime Ctx: type) type {
         /// Must be called after the AppWindow has reached its final address —
         /// by-value init copies invalidate the widget pointers captured here.
         pub fn rootWidget(self: *AppWindow) vxfw.Widget {
+            self._files_view.setModalHost(&self._modal_host);
             self._modal_host.setBase(self.widget(), self._files_view.widget());
             return self._modal_host.widget();
         }

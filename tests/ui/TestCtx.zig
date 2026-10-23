@@ -30,6 +30,13 @@ pub const TestCtx = struct {
     /// Paths that fail to open in listDir, simulating a directory deleted
     /// outside the app; listDir reports error.DirMissing for them.
     missing_paths: []const []const u8 = &.{},
+    /// Recorded requestDelete calls; the fake disk never executes them.
+    delete_requests: std.ArrayList(RecordedDelete) = .empty,
+
+    pub const RecordedDelete = struct {
+        parent: EntryId,
+        name: []const u8,
+    };
 
     /// Scans the fake disk synchronously, so tests start with a fully
     /// scanned tree. The engine root is "/base".
@@ -61,6 +68,10 @@ pub const TestCtx = struct {
     }
 
     pub fn deinit(self: *TestCtx, gpa: Allocator) void {
+        for (self.delete_requests.items) |request| {
+            gpa.free(request.name);
+        }
+        self.delete_requests.deinit(gpa);
         self._engine.deinit(gpa);
     }
 
@@ -111,5 +122,13 @@ pub const TestCtx = struct {
 
     pub fn getEntryPath(self: *TestCtx, gpa: Allocator, id: EntryId) ![]const u8 {
         return self._engine.pathOf(gpa, id);
+    }
+
+    /// Records the request instead of executing it: the view's contract
+    /// is the right parent and name; execution is runtime territory.
+    pub fn requestDelete(self: *TestCtx, gpa: Allocator, parent: EntryId, name: []const u8) Allocator.Error!void {
+        const name_copy = try gpa.dupe(u8, name);
+        errdefer gpa.free(name_copy);
+        try self.delete_requests.append(gpa, .{ .parent = parent, .name = name_copy });
     }
 };
