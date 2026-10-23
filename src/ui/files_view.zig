@@ -11,7 +11,7 @@ const Allocator = std.mem.Allocator;
 
 /// Directory listing widget, generic over Ctx (runtime.Scanner in prod,
 /// TestCtx in tests). Ctx contract: listDir may fail DirMissing (view
-/// falls back to the parent); requestDelete queues deletions.
+/// falls back to the parent); requestDelete/takeError drive deletions.
 pub fn FilesView(comptime Ctx: type) type {
     return struct {
         const Self = @This();
@@ -37,6 +37,16 @@ pub fn FilesView(comptime Ctx: type) type {
         /// Null until setModalHost wires it; without a host the Delete
         /// key is a no-op (bare views in per-widget tests).
         _confirm_dialog: ?ConfirmDialog = null,
+        /// Deletion failure shown as a red bar; expires on the tick after
+        /// toast_duration_ms or on any key press.
+        _toast: ?Toast = null,
+
+        const toast_duration_ms: i64 = 3000;
+
+        const Toast = struct {
+            msg: []u8,
+            shown_ms: i64,
+        };
 
         pub fn init(allocator: Allocator, ctx: *Ctx) Self {
             return .{
@@ -54,6 +64,7 @@ pub fn FilesView(comptime Ctx: type) type {
 
         pub fn deinit(self: *Self) void {
             if (self._confirm_dialog) |*dialog| dialog.deinit();
+            self.clearToast();
             Ctx.deinitListDir(self._allocator, &self._entries);
         }
 
@@ -134,6 +145,17 @@ pub fn FilesView(comptime Ctx: type) type {
             dir: Ctx.EntryId,
             name: []u8,
         };
+
+        fn setToast(self: *Self, msg: []const u8) !void {
+            const copy = try self._allocator.dupe(u8, msg);
+            self.clearToast();
+            self._toast = .{ .msg = copy, .shown_ms = self._ctx.nowMs() };
+        }
+
+        fn clearToast(self: *Self) void {
+            if (self._toast) |toast| self._allocator.free(toast.msg);
+            self._toast = null;
+        }
 
         fn deleteSelectedEntry(self: *Self, ctx: *vxfw.EventContext) !void {
             const dialog: *ConfirmDialog = if (self._confirm_dialog) |*d| d else return;
@@ -217,6 +239,10 @@ pub fn FilesView(comptime Ctx: type) type {
                     // next mouse motion brings the highlight back.
                     self._hovered_index = null;
                     self._snap_selection = true;
+                    if (self._toast != null) {
+                        self.clearToast();
+                        ctx.redraw = true;
+                    }
                     if (key.matches(vaxis.Key.escape, .{}) or
                         key.matches(vaxis.Key.backspace, .{}) or
                         key.matches(vaxis.Key.left, .{}))
@@ -305,7 +331,18 @@ pub fn FilesView(comptime Ctx: type) type {
                     }
                 },
                 .tick => {
-                    ctx.redraw = try self.updateEntries(.{});
+                    var buf: [256]u8 = undefined;
+                    if (self._ctx.takeError(&buf)) |msg| {
+                        try self.setToast(msg);
+                        ctx.redraw = true;
+                    }
+                    if (self._toast) |*toast| {
+                        if (self._ctx.nowMs() - toast.shown_ms >= toast_duration_ms) {
+                            self.clearToast();
+                            ctx.redraw = true;
+                        }
+                    }
+                    ctx.redraw = (try self.updateEntries(.{})) or ctx.redraw;
                     try ctx.tick(20, self.widget());
                 },
                 else => {},
@@ -455,6 +492,38 @@ pub fn FilesView(comptime Ctx: type) type {
                         });
                     }
                 }
+            }
+
+            if (self._toast) |toast| {
+                // red bar over the last listing row; the app's progress
+                // bar sits outside this view and stays visible
+                const toast_style: vaxis.Style = .{
+                    .fg = .{ .index = 7 },
+                    .bg = .{ .index = 1 },
+                    .bold = true,
+                };
+                const bar = try vxfw.Surface.init(
+                    ctx.arena,
+                    self.widget(),
+                    .{ .width = max_size.width, .height = 1 },
+                );
+                @memset(bar.buffer, .{ .char = .{ .grapheme = " ", .width = 1 }, .style = toast_style });
+                try children.append(ctx.arena, .{
+                    .origin = .{ .row = max_size.height - 1, .col = 0 },
+                    .surface = bar,
+                });
+
+                const text: vxfw.Text = .{
+                    .text = toast.msg,
+                    .style = toast_style,
+                    .softwrap = false,
+                };
+                var text_ctx = ctx;
+                text_ctx.max.width = max_size.width -| 1;
+                try children.append(ctx.arena, .{
+                    .origin = .{ .row = max_size.height - 1, .col = 1 },
+                    .surface = try text.draw(text_ctx),
+                });
             }
 
             return .{

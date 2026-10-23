@@ -301,6 +301,66 @@ test "delete key ignores the parent row" {
     try std.testing.expectEqual(@as(usize, 0), ctx.delete_requests.items.len);
 }
 
+test "deletion failures surface as a toast that expires" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+
+    // the worker recorded a failure; the next tick picks it up once
+    ctx.error_message = "Failed to delete 'root.txt': AccessDenied";
+    d = try harness.send(gpa, widget, harness.tick);
+    try std.testing.expect(d.redraw);
+    d.deinit(gpa);
+    try std.testing.expect(view._toast != null);
+    try std.testing.expect(ctx.error_message == null);
+
+    {
+        const rendered = try harness.draw(gpa, widget, 80, 12);
+        defer rendered.deinit(gpa);
+        try snapshot.expectGolden("files_view/toast", rendered);
+    }
+
+    // the fake clock moves past the expiry; the next tick drops the
+    // toast and the view renders like the plain listing again
+    ctx.now_ms = 4000;
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+    try std.testing.expect(view._toast == null);
+    {
+        const rendered = try harness.draw(gpa, widget, 80, 12);
+        defer rendered.deinit(gpa);
+        try snapshot.expectGolden("files_view/basic", rendered);
+    }
+}
+
+test "any key press clears the toast" {
+    var ctx = try fixtures.makeCtx();
+    defer ctx.deinit(gpa);
+    var view = fixtures.makeView(&ctx);
+    defer view.deinit();
+    const widget = view.widget();
+
+    var d = try harness.send(gpa, widget, .init);
+    d.deinit(gpa);
+
+    ctx.error_message = "Failed to delete 'root.txt': AccessDenied";
+    d = try harness.send(gpa, widget, harness.tick);
+    d.deinit(gpa);
+    try std.testing.expect(view._toast != null);
+
+    // the key still does its own job (selection moves); the toast goes
+    d = try harness.send(gpa, widget, harness.keyPress(Key.down));
+    try std.testing.expect(d.redraw);
+    d.deinit(gpa);
+    try std.testing.expect(view._toast == null);
+    try std.testing.expectEqual(@as(usize, 2), view._selected_index);
+}
+
 test "FilesView falls back to the parent when the opened dir is deleted" {
     var ctx = try fixtures.makeCtx();
     defer ctx.deinit(gpa);

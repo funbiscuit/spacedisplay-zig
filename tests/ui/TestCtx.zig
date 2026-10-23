@@ -32,6 +32,8 @@ pub const TestCtx = struct {
     missing_paths: []const []const u8 = &.{},
     /// Recorded requestDelete calls; the fake disk never executes them.
     delete_requests: std.ArrayList(RecordedDelete) = .empty,
+    /// When set, handed out once by takeError (scripted deletion failure).
+    error_message: ?[]const u8 = null,
 
     pub const RecordedDelete = struct {
         parent: EntryId,
@@ -130,5 +132,15 @@ pub const TestCtx = struct {
         const name_copy = try gpa.dupe(u8, name);
         errdefer gpa.free(name_copy);
         try self.delete_requests.append(gpa, .{ .parent = parent, .name = name_copy });
+    }
+
+    /// Hands out the scripted error once, like the engine's single slot.
+    pub fn takeError(self: *TestCtx, buf: []u8) ?[]const u8 {
+        const msg = self.error_message orelse return null;
+        self.error_message = null;
+        const n = @min(buf.len, msg.len);
+        const out = buf[0..n];
+        @memcpy(out, msg[0..n]);
+        return out;
     }
 };
