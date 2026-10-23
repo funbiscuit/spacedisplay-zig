@@ -62,3 +62,16 @@ tests/            end-to-end tests (UI, CLI) against the public API only
   (runtime.Scanner in production, TestCtx in tests).
 - Tests must be deterministic: no network, no terminal required, no reliance on
   wall-clock time, every wait bounded by a timeout.
+
+## Comments
+
+- A comment states what the code cannot: an invariant, an ownership
+  rule, an error contract, a non-obvious why (fail-closed ordering,
+  gutter clamping, wasm memory detachment). It never restates what the
+  next lines visibly do.
+- Module headers: at most 3 lines — responsibility and binding
+  constraints only. Bring an oversized header down when you touch its
+  module.
+- A function/property gets a doc comment only when the name and signature don't
+  tell the whole story: error semantics at a boundary, caller
+  obligations, lifetime of returned data.
