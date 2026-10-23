@@ -308,6 +308,7 @@ pub fn applyListing(
 
     self.total_dirs += @intCast(set_children_result.new_dirs.len);
     self.total_dirs -= set_children_result.removed_dirs;
+    self.total_files -= @intCast(set_children_result.removed_files);
     if (size_delta > 0) {
         self.scanned_size += @intCast(size_delta);
     } else if (size_delta < 0) {

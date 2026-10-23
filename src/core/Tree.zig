@@ -36,6 +36,11 @@ pub const DirEntry = struct {
     /// Size of all its children
     total_size: i64 = 0,
 
+    /// Permanent (ids are never reused): the entry left its parent's
+    /// listing, detaching every descendant with it — their totals were
+    /// already folded away, so queued work on them must be discarded.
+    removed: bool = false,
+
     pub fn firstChild(self: DirEntry) ?EntryId {
         return if (self._first_child > 0)
             .{ ._index = self._first_child - 1 }
@@ -83,6 +88,10 @@ pub const SetChildrenResult = struct {
     new_dirs: []const EntryId,
     existing_dirs: []const EntryId,
     removed_dirs: u32,
+    /// File counts that left the tree together with the removed
+    /// directories: each dir node records only its direct files, so a
+    /// removed subtree takes the counts of all its nodes with it.
+    removed_files: u64,
 };
 
 pub fn setChildren(
@@ -112,6 +121,7 @@ pub fn setChildren(
     try new_ids.ensureTotalCapacityPrecise(arena, dir_names.len);
     try existing_ids.ensureTotalCapacityPrecise(arena, dir_names.len);
     var removed_ids: u32 = 0;
+    var removed_files: u64 = 0;
 
     // initially assume that parent has no size and correct it as we go
     var size_delta: i64 = @intCast(files_size);
@@ -143,8 +153,10 @@ pub fn setChildren(
                 } else {
                     self._nodes.items[parent_id._index]._first_child = current_existing_entry._next_node;
                 }
+                removed_ids += self.countDirs(cursor_existing_id.?);
+                removed_files += self.countFiles(cursor_existing_id.?);
+                self._nodes.items[cursor_existing_id.?._index].removed = true;
                 cursor_existing_id = current_existing_entry.nextNode();
-                removed_ids += 1;
             } else {
                 // entry is kept as is
                 size_delta += current_existing_entry.total_size;
@@ -177,8 +189,10 @@ pub fn setChildren(
             } else {
                 self._nodes.items[parent_id._index]._first_child = current_existing_entry._next_node;
             }
+            removed_ids += self.countDirs(cursor_existing_id.?);
+            removed_files += self.countFiles(cursor_existing_id.?);
+            self._nodes.items[cursor_existing_id.?._index].removed = true;
             cursor_existing_id = current_existing_entry.nextNode();
-            removed_ids += 1;
         } else break;
     }
     if (size_delta != 0) {
@@ -192,12 +206,36 @@ pub fn setChildren(
         .new_dirs = new_ids.items,
         .existing_dirs = existing_ids.items,
         .removed_dirs = removed_ids,
+        .removed_files = removed_files,
     };
 }
 
 pub fn getNode(self: Tree, id: EntryId) DirEntry {
     std.debug.assert(id._index < self._nodes.items.len);
     return self._nodes.items[id._index];
+}
+
+/// Sum of direct file counts over the subtree; like countDirs, walks
+/// linked children only.
+fn countFiles(self: Tree, id: EntryId) u64 {
+    var count: u64 = self.getNode(id).files;
+    var child = self.getNode(id).firstChild();
+    while (child) |c| : (child = self.getNode(c).nextNode()) {
+        count += self.countFiles(c);
+    }
+    return count;
+}
+
+/// Subtree size in directories, `id` included. Walks linked children
+/// only: entries dropped by earlier setChildren calls are unlinked, so
+/// they are never counted twice.
+fn countDirs(self: Tree, id: EntryId) u32 {
+    var count: u32 = 1;
+    var child = self.getNode(id).firstChild();
+    while (child) |c| : (child = self.getNode(c).nextNode()) {
+        count += self.countDirs(c);
+    }
+    return count;
 }
 
 pub fn getNodeName(self: Tree, entry: DirEntry) []const u8 {
@@ -340,6 +378,30 @@ test "removing a child subtracts its size from all ancestors" {
     try std.testing.expectEqual(@as(i64, 0), tree.getNode(d).total_size);
     try std.testing.expectEqual(@as(i64, 0), tree.getNode(.root).total_size);
     try std.testing.expect(tree.getNode(d).firstChild() == null);
+}
+
+test "removing a subtree counts all its directories" {
+    const gpa = std.testing.allocator;
+    var tree = try Tree.init(gpa, "base");
+    defer tree.deinit(gpa);
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var d_names = [_][]const u8{"d"};
+    const d_res = try tree.setChildren(gpa, arena.allocator(), .root, &d_names, 0, 0);
+    const d = d_res.new_dirs[0];
+    var e_names = [_][]const u8{"e"};
+    const e_res = try tree.setChildren(gpa, arena.allocator(), d, &e_names, 0, 0);
+    const e = e_res.new_dirs[0];
+    var f_names = [_][]const u8{"f"};
+    _ = try tree.setChildren(gpa, arena.allocator(), e, &f_names, 250, 5);
+
+    // dropping d removes d, e and f in one go: all three were counted in
+    // the caller's totals and must leave them together, files included
+    var none = [_][]const u8{};
+    const removed = try tree.setChildren(gpa, arena.allocator(), .root, &none, 0, 0);
+    try std.testing.expectEqual(@as(u32, 3), removed.removed_dirs);
+    try std.testing.expectEqual(@as(u64, 5), removed.removed_files);
 }
 
 test "computeFullPath joins names from root to entry" {
