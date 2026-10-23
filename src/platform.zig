@@ -8,6 +8,17 @@ const Allocator = std.mem.Allocator;
 
 pub const MountStats = ScanEngine.MountStats;
 
+/// Deletes whatever `sub_path` turns out to be on disk: a file, a symlink
+/// (removed, never followed), or an empty directory. Non empty directories
+/// are not removed and `DirNotEmpty` error is returned.
+pub fn deletePath(dir: std.Io.Dir, io: std.Io, sub_path: []const u8) !void {
+    return posix.deletePath(dir, io, sub_path);
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
 pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
     const parent_pathz = try allocator.dupeZ(u8, parent_path);
     defer allocator.free(parent_pathz);
