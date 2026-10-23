@@ -80,6 +80,19 @@ pub fn waitIdleTimeout(self: *Scanner, timeout: std.Io.Timeout) !void {
     return self._engine.waitIdle(self._io, timeout);
 }
 
+/// Deletion runs on the worker thread in per-directory rounds, so the
+/// tree keeps updating while it goes; the entry leaves the tree when
+/// the deletion completes.
+pub fn requestDelete(self: *Scanner, allocator: Allocator, parent: EntryId, name: []const u8) Allocator.Error!void {
+    return self._engine.requestDelete(allocator, parent, name);
+}
+
+/// Moves the last deletion failure into `buf` (truncated to fit); null
+/// when nothing failed since the previous call.
+pub fn takeError(self: *Scanner, buf: []u8) ?[]const u8 {
+    return self._engine.takeError(buf);
+}
+
 pub fn deinitListDir(allocator: Allocator, entries: *std.ArrayList(ListDirEntry)) void {
     ScanEngine.deinitListDir(allocator, entries);
 }
@@ -115,21 +128,27 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    // park when the queues are empty, serving user-requested rescans until
-    // a stop is requested
+    // park when the queues are empty, serving user-requested deletions and
+    // rescans until a stop is requested
     while (!engine.stopRequested()) {
-        const id = engine.nextDirToScan() orelse {
+        const job = engine.nextJob(allocator) orelse {
             io.sleep(.fromMicroseconds(100), .awake) catch {}; // 0.1ms
             continue;
         };
 
         _ = arena.reset(.retain_capacity);
 
-        const dir_path = try engine.pathOf(allocator, id);
-        defer allocator.free(dir_path);
-
-        const listing = try scanSingleDir(io, arena.allocator(), dir_path);
-        try engine.applyListing(allocator, arena.allocator(), id, listing.entries);
+        // Deletion failures are recorded in the engine's error slot by the
+        // job itself; the errors that reach here are allocation failures,
+        // which are as fatal as they are for scans.
+        switch (job) {
+            .scan => |scan| try runScanJob(engine, allocator, io, arena.allocator(), scan),
+            .delete_dir => |id| try runDeleteDirJob(engine, allocator, io, arena.allocator(), id),
+            .delete_file => |file| {
+                defer allocator.free(file.name);
+                try runDeleteFileJob(engine, allocator, io, arena.allocator(), file);
+            },
+        }
     }
 
     const c = engine.counters();
@@ -146,6 +165,71 @@ const DirListing = struct {
     /// unreadable), as opposed to existing but being empty.
     missing: bool = false,
 };
+
+fn runScanJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, scan: ScanEngine.ScanJob) !void {
+    const dir_path = try engine.pathOf(arena, scan.id);
+    const listing = try scanSingleDir(io, arena, dir_path);
+    try engine.applyListing(allocator, arena, scan.id, listing.entries);
+}
+
+fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, id: EntryId) !void {
+    const dir_path = try engine.pathOf(arena, id);
+    const listing = try scanSingleDir(io, arena, dir_path);
+
+    var remaining: std.ArrayList(ScanEngine.DirEntry) = .empty;
+    for (listing.entries) |entry| {
+        const target = try std.fs.path.join(arena, &.{ dir_path, entry.name });
+        if (platform.deletePath(Io.Dir.cwd(), io, target)) {} else |err| switch (err) {
+            // still has contents; its own delete job empties it later
+            error.DirNotEmpty => try remaining.append(arena, entry),
+            // vanished under us — counts as deleted
+            error.FileNotFound => {},
+            else => engine.recordDeleteError(entry.name, err),
+        }
+    }
+
+    if (remaining.items.len > 0) {
+        try engine.applyDeleteRound(allocator, arena, id, remaining.items);
+        return;
+    }
+
+    platform.deletePath(Io.Dir.cwd(), io, dir_path) catch |err| switch (err) {
+        error.FileNotFound => {}, // already gone
+        else => engine.recordDeleteError(std.fs.path.basename(dir_path), err),
+    };
+    // the parent's fresh listing drops this directory from the tree
+    if (engine.getParentId(id)) |parent| {
+        try engine.pushJobs(allocator, &.{.{ .scan = .{ .id = parent } }});
+    }
+}
+
+/// Unlinks the file, then syncs the parent's tree from a fresh listing.
+fn runDeleteFileJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, file: ScanEngine.FileJob) !void {
+    const parent_path = try engine.pathOf(arena, file.parent);
+    const listing = try scanSingleDir(io, arena, parent_path);
+
+    var remaining: std.ArrayList(ScanEngine.DirEntry) = .empty;
+    var found = false;
+    for (listing.entries) |entry| {
+        if (!found and std.mem.eql(u8, entry.name, file.name)) {
+            found = true;
+            const target = try std.fs.path.join(arena, &.{ parent_path, file.name });
+            if (platform.deletePath(Io.Dir.cwd(), io, target)) {} else |err| switch (err) {
+                // vanished under us; the sync below drops it either way
+                error.FileNotFound => {},
+                else => {
+                    engine.recordDeleteError(file.name, err);
+                    try remaining.append(arena, entry);
+                },
+            }
+            continue;
+        }
+        try remaining.append(arena, entry);
+    }
+    if (!found) engine.recordDeleteError(file.name, error.FileNotFound);
+
+    try engine.applyListing(allocator, arena, file.parent, remaining.items);
+}
 
 fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) !DirListing {
     var entries = std.ArrayList(ScanEngine.DirEntry).empty;
@@ -341,6 +425,89 @@ test "Scanner.listDir reports a deleted directory" {
     // the disappearance instead of pretending the directory is empty
     try fixture.tmp.dir.deleteTree(std.testing.io, "a");
     try std.testing.expectError(error.DirMissing, fixture.scanner.listDir(std.testing.allocator, a_id));
+}
+
+test "Scanner deletes a queued file and refreshes the tree" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    try fixture.scanner.requestDelete(std.testing.allocator, .root, "root50.bin");
+    try fixture.scanner.waitIdle(10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    // parent row, then a/ (300 B): the deleted file is gone
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+    try std.testing.expectEqualStrings(".", entries.items[0].name);
+    try std.testing.expectEqualStrings("a", entries.items[1].name);
+
+    const stats = try fixture.scanner.getStats(std.testing.allocator, .root);
+    try std.testing.expectEqual(@as(u64, 300), stats.scanned_size);
+    try std.testing.expectEqual(@as(u32, 2), stats.total_files);
+}
+
+test "Scanner deletes a queued directory tree and refreshes the tree" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    try fixture.scanner.requestDelete(std.testing.allocator, .root, "a");
+    try fixture.scanner.waitIdle(10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    // parent row, then root50.bin (50 B): the whole subtree is gone
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+    try std.testing.expectEqualStrings("root50.bin", entries.items[1].name);
+
+    const stats = try fixture.scanner.getStats(std.testing.allocator, .root);
+    try std.testing.expectEqual(@as(u64, 50), stats.scanned_size);
+    try std.testing.expectEqual(@as(u32, 1), stats.total_files);
+    try std.testing.expectEqual(@as(u32, 0), stats.total_dirs);
+}
+
+test "Scanner deletes a leaf dir without touching its parent" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    var entries = try fixture.scanner.listDir(std.testing.allocator, .root);
+    defer Scanner.deinitListDir(std.testing.allocator, &entries);
+    const a_id = for (entries.items) |entry| {
+        if (entry.kind == .directory and std.mem.eql(u8, entry.name, "a")) break entry.id.?;
+    } else return error.MissingDir;
+
+    try fixture.scanner.requestDelete(std.testing.allocator, a_id, "b");
+    try fixture.scanner.waitIdle(10_000);
+
+    // a/ survives on disk and keeps its other file
+    var a_entries = try fixture.scanner.listDir(std.testing.allocator, a_id);
+    defer Scanner.deinitListDir(std.testing.allocator, &a_entries);
+    try std.testing.expectEqual(@as(usize, 2), a_entries.items.len);
+    try std.testing.expectEqualStrings("..", a_entries.items[0].name);
+    try std.testing.expectEqualStrings("one.bin", a_entries.items[1].name);
+
+    const stats = try fixture.scanner.getStats(std.testing.allocator, a_id);
+    try std.testing.expectEqual(@as(u64, 100), stats.current_dir_size);
+
+    // and b/ is really gone from disk while its parent still exists
+    try std.testing.expectError(error.FileNotFound, fixture.tmp.dir.openDir(std.testing.io, "a/b", .{}));
+}
+
+test "Scanner records a failure when a delete misses" {
+    var fixture = try Fixture.create();
+    defer fixture.destroy() catch {};
+    try fixture.scanner.waitIdle(10_000);
+
+    try fixture.scanner.requestDelete(std.testing.allocator, .root, "no-such.bin");
+    try fixture.scanner.waitIdle(10_000);
+
+    var buf: [256]u8 = undefined;
+    const msg = fixture.scanner.takeError(&buf);
+    try std.testing.expect(msg != null);
+    try std.testing.expect(std.mem.startsWith(u8, msg.?, "Failed to delete 'no-such.bin'"));
+    try std.testing.expect(fixture.scanner.takeError(&buf) == null);
 }
 
 test "Scanner deinit stops a running scan" {

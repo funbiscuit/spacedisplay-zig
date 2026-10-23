@@ -40,9 +40,14 @@ pub const TestCtx = struct {
         var arena = std.heap.ArenaAllocator.init(gpa);
         defer arena.deinit();
 
-        while (scan_engine.nextDirToScan()) |id| {
-            const path = try scan_engine.pathOf(arena.allocator(), id);
-            try scan_engine.applyListing(gpa, arena.allocator(), id, entriesFor(disk, path));
+        while (scan_engine.nextJob(gpa)) |job| {
+            // the scripted disk never produces deletion jobs
+            const scan = switch (job) {
+                .scan => |s| s,
+                else => unreachable,
+            };
+            const path = try scan_engine.pathOf(arena.allocator(), scan.id);
+            try scan_engine.applyListing(gpa, arena.allocator(), scan.id, entriesFor(disk, path));
         }
 
         return .{ ._engine = scan_engine, .disk = disk };

@@ -1,6 +1,6 @@
-//! Pure scan state machine: owns the tree, scan queues and counters. The
-//! caller pops a queued dir with nextDirToScan, lists it on disk, and feeds
-//! the listing back through applyListing. Mutex-guarded, thread-safe.
+//! Pure scan/delete state machine: owns the tree, the job queues and
+//! the counters. The caller pops a job with nextJob, runs it, and feeds
+//! each fresh listing back. Mutex-guarded, thread-safe.
 
 const std = @import("std");
 const format = @import("format.zig");
@@ -86,9 +86,29 @@ pub const ListDirEntry = struct {
     }
 };
 
-const QueueItem = struct {
+/// `rescan_existing` additionally re-queues the subdirectories the tree
+/// already knows.
+pub const ScanJob = struct {
     id: EntryId,
-    rescan_existing: bool,
+    rescan_existing: bool = false,
+};
+
+/// Files are not tree nodes, so they are addressed by parent and name;
+/// the queue entry owns the name until the job pops.
+pub const FileJob = struct {
+    parent: EntryId,
+    name: []const u8,
+};
+
+/// One unit of worker work. Every variant starts by resolving its
+/// directory from the tree and taking a fresh listing of it.
+pub const Job = union(enum) {
+    scan: ScanJob,
+    /// Deletes the directory in rounds: each round removes what it can,
+    /// queues jobs for what survives, and updates the tree; the
+    /// directory itself goes once nothing is left.
+    delete_dir: EntryId,
+    delete_file: FileJob,
 };
 
 _mutex: Mutex = .init,
@@ -97,12 +117,17 @@ _tree: Tree,
 /// Owned copy of the scanned root path
 _scanned_path: []const u8,
 
-/// Directories pending their first scan
-_scan_stack: std.ArrayList(QueueItem) = .empty,
-/// Rescan requests coming from user actions in the UI
-user_scan_queue: queue.Queue(QueueItem, 16) = .{},
-/// The item returned by the last nextDirToScan call, consumed by applyListing
-_in_flight: ?QueueItem = null,
+/// Worker-generated work: first scans, rescans of new dirs, follow-up
+/// deletion rounds. Push order is load-bearing — see pushJobs.
+_work_stack: std.ArrayList(Job) = .empty,
+user_job_queue: queue.Queue(Job, 16) = .{},
+/// The job returned by the last nextJob call, consumed by applyListing
+_in_flight: ?Job = null,
+
+/// Single-slot delete failure for the UI; fixed-size so recording never
+/// allocates.
+_last_error_buf: [256]u8 = undefined,
+_last_error_len: u16 = 0,
 
 /// Incremented on every transition to idle (queue drained or stop
 /// requested); idle-waiters park on it, so the wait survives repeated
@@ -130,14 +155,19 @@ pub fn init(allocator: Allocator, io: std.Io, scanned_path: []const u8) !ScanEng
         ._scanned_path = path,
         ._is_scanning = true,
     };
-    try engine._scan_stack.append(allocator, .{ .id = .root, .rescan_existing = false });
+    try engine._work_stack.append(allocator, .{ .scan = .{ .id = .root } });
     return engine;
 }
 
 pub fn deinit(self: *ScanEngine, allocator: Allocator) void {
+    // queued delete_file jobs still own their names; popped ones
+    // belong to the worker
+    while (self.user_job_queue.popBack()) |job| {
+        if (job == .delete_file) allocator.free(job.delete_file.name);
+    }
     self._tree.deinit(allocator);
     allocator.free(self._scanned_path);
-    self._scan_stack.deinit(allocator);
+    self._work_stack.deinit(allocator);
 }
 
 pub fn scannedPath(self: *ScanEngine) []const u8 {
@@ -187,9 +217,10 @@ pub fn hasChanges(self: *ScanEngine) bool {
     return had;
 }
 
-/// Pops the next directory to scan (user rescans first). Returns null when
-/// the queue is drained or a stop was requested.
-pub fn nextDirToScan(self: *ScanEngine) ?EntryId {
+/// Returns null when both queues are drained or a stop was requested.
+/// Ownership of a popped `delete_file` name moves to the caller, which
+/// must free it with the same allocator.
+pub fn nextJob(self: *ScanEngine, allocator: Allocator) ?Job {
     self._mutex.lockUncancelable(self._io);
     defer self._mutex.unlock(self._io);
 
@@ -197,16 +228,41 @@ pub fn nextDirToScan(self: *ScanEngine) ?EntryId {
         self.setIdleLocked();
         return null;
     }
-    const item: QueueItem = blk: {
-        if (self.user_scan_queue.popBack()) |user_item| break :blk user_item;
-        if (self._scan_stack.pop()) |stack_item| break :blk stack_item;
-        self.setIdleLocked();
-        return null;
-    };
-    self._in_flight = item;
-    self.currently_scanned_id = item.id;
-    self._is_scanning = true;
-    return item.id;
+    while (true) {
+        const job: Job = blk: {
+            if (self.user_job_queue.popBack()) |user_job| break :blk user_job;
+            if (self._work_stack.pop()) |stack_job| break :blk stack_job;
+            self.setIdleLocked();
+            return null;
+        };
+        // A rescan may have dropped this entry from the tree after its job
+        // was queued; its totals were already folded away by setChildren,
+        // so applying another listing would adjust the counters again.
+        const target: EntryId = switch (job) {
+            .scan => |scan| scan.id,
+            .delete_dir => |id| id,
+            .delete_file => |file| file.parent,
+        };
+        if (self.isAttachedLocked(target)) {
+            self._in_flight = job;
+            self.currently_scanned_id = target;
+            self._is_scanning = true;
+            return job;
+        }
+        if (job == .delete_file) allocator.free(job.delete_file.name);
+    }
+}
+
+/// True when `id` still hangs off the root: setChildren marks the entries
+/// it drops, and every descendant of a marked entry is detached with it.
+/// Caller must hold `_mutex`.
+fn isAttachedLocked(self: *ScanEngine, id: EntryId) bool {
+    var current = id;
+    while (true) {
+        const node = self._tree.getNode(current);
+        if (node.removed) return false;
+        current = node.parent() orelse return true;
+    }
 }
 
 /// Blocks until the engine is idle: no listing in flight and no queued work
@@ -295,12 +351,12 @@ pub fn applyListing(
     files_delta += @intCast(new_root.files);
 
     for (set_children_result.new_dirs) |dir_id| {
-        try self._scan_stack.append(allocator, .{ .id = dir_id, .rescan_existing = false });
+        try self._work_stack.append(allocator, .{ .scan = .{ .id = dir_id } });
     }
     if (self._in_flight) |in_flight| {
-        if (in_flight.rescan_existing) {
+        if (in_flight == .scan and in_flight.scan.rescan_existing) {
             for (set_children_result.existing_dirs) |dir_id| {
-                try self._scan_stack.append(allocator, .{ .id = dir_id, .rescan_existing = true });
+                try self._work_stack.append(allocator, .{ .scan = .{ .id = dir_id, .rescan_existing = true } });
             }
         }
         self._in_flight = null;
@@ -381,9 +437,122 @@ pub fn getScannedChildId(self: *ScanEngine, parent: EntryId) ?EntryId {
 /// Queues a rescan request coming from user actions. Silently ignored when
 /// the bounded queue is full.
 pub fn queueUserScan(self: *ScanEngine, id: EntryId, rescan_existing: bool) void {
+    _ = self.queueUserJob(.{ .scan = .{ .id = id, .rescan_existing = rescan_existing } }) catch return;
+}
+
+fn queueUserJob(self: *ScanEngine, job: Job) Allocator.Error!bool {
     self._mutex.lockUncancelable(self._io);
     defer self._mutex.unlock(self._io);
-    self.user_scan_queue.putBack(.{ .id = id, .rescan_existing = rescan_existing }) catch {};
+    return self.queueUserJobLocked(job);
+}
+
+/// Returns false when the bounded queue was full and the job was
+/// dropped — tolerable because scans self-heal on the next listing and
+/// user deletions are dialog-gated.
+fn queueUserJobLocked(self: *ScanEngine, job: Job) Allocator.Error!bool {
+    if (self._should_stop) return true;
+    // the ring is fixed-size, so full is the only failure
+    self.user_job_queue.putBack(job) catch return false;
+    // raise the flag so waitIdle covers the queued job
+    self._is_scanning = true;
+    return true;
+}
+
+/// Directories resolve to a delete_dir job (by tree id), everything
+/// else to delete_file with a copy of `name`. OOM is the only error;
+/// a full user queue drops the job silently.
+pub fn requestDelete(self: *ScanEngine, allocator: Allocator, parent: EntryId, name: []const u8) Allocator.Error!void {
+    {
+        self._mutex.lockUncancelable(self._io);
+        defer self._mutex.unlock(self._io);
+        if (self.findChildDirLocked(parent, name)) |id| {
+            _ = try self.queueUserJobLocked(.{ .delete_dir = id });
+            return;
+        }
+    }
+    const name_copy = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_copy);
+    if (try self.queueUserJob(.{ .delete_file = .{ .parent = parent, .name = name_copy } })) return;
+    // dropped: the queue never took ownership of the copy
+    allocator.free(name_copy);
+}
+
+/// Appends in order; the stack is LIFO, so with `[resume, child_a,
+/// child_b]` the children run before the resume job waiting on them.
+pub fn pushJobs(self: *ScanEngine, allocator: Allocator, jobs: []const Job) Allocator.Error!void {
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
+    try self._work_stack.appendSlice(allocator, jobs);
+}
+
+/// `remaining` is what survived one deletion round inside `id`: updates
+/// the tree and queues a resume job for `id` plus a delete job per
+/// surviving subdirectory — children empty out before `id` is revisited.
+pub fn applyDeleteRound(
+    self: *ScanEngine,
+    allocator: Allocator,
+    arena: Allocator,
+    id: EntryId,
+    remaining: []const DirEntry,
+) Allocator.Error!void {
+    try self.applyListing(allocator, arena, id, remaining);
+
+    var jobs: std.ArrayList(Job) = .empty;
+    defer jobs.deinit(allocator);
+    try jobs.append(allocator, .{ .delete_dir = id });
+
+    self._mutex.lockUncancelable(self._io);
+    for (remaining) |entry| {
+        if (entry.kind != .directory) continue;
+        const child = self.findChildDirLocked(id, entry.name) orelse continue;
+        // OOM here keeps the resume job queued, so the round still
+        // converges; the missed child is picked up on the next visit
+        jobs.append(allocator, .{ .delete_dir = child }) catch break;
+    }
+    self._mutex.unlock(self._io);
+
+    try self.pushJobs(allocator, jobs.items);
+}
+
+/// Caller must hold `_mutex`.
+fn findChildDirLocked(self: *ScanEngine, parent: EntryId, name: []const u8) ?EntryId {
+    var child = self._tree.getNode(parent).firstChild();
+    while (child) |c| : (child = self._tree.getNode(c).nextNode()) {
+        if (std.mem.eql(u8, self._tree.getNodeName(self._tree.getNode(c)), name)) return c;
+    }
+    return null;
+}
+
+/// Single slot for the UI: overwrites any earlier failure. Never allocates.
+pub fn recordDeleteError(self: *ScanEngine, name: []const u8, err: anyerror) void {
+    var name_buf: [67]u8 = undefined;
+    const shown = if (name.len <= name_buf.len - 3)
+        name
+    else
+        std.fmt.bufPrint(&name_buf, "{s}...", .{name[0 .. name_buf.len - 3]}) catch unreachable;
+
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
+    const msg = std.fmt.bufPrint(&self._last_error_buf, "Failed to delete '{s}': {s}", .{ shown, @errorName(err) }) catch {
+        // unreachable by construction: the name is capped and error names
+        // are far shorter than the remaining space
+        self._last_error_len = 0;
+        return;
+    };
+    self._last_error_len = @intCast(msg.len);
+}
+
+/// Moves the last recorded deletion failure into `buf` (truncated to
+/// fit); null when nothing failed since the previous call.
+pub fn takeError(self: *ScanEngine, buf: []u8) ?[]const u8 {
+    self._mutex.lockUncancelable(self._io);
+    defer self._mutex.unlock(self._io);
+    if (self._last_error_len == 0) return null;
+    const n = @min(buf.len, self._last_error_len);
+    const out = buf[0..n];
+    @memcpy(out, self._last_error_buf[0..n]);
+    self._last_error_len = 0;
+    return out;
 }
 
 pub const Counters = struct {
@@ -633,24 +802,72 @@ test "waitIdle re-arms across repeated scans" {
     // scanning: even a zero timeout must not report idle
     try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
 
-    const root_id = engine.nextDirToScan().?;
+    const root_job = engine.nextJob(gpa).?;
+    try std.testing.expect(root_job == .scan);
     try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
 
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    try engine.applyListing(gpa, arena.allocator(), root_id, &.{});
+    try engine.applyListing(gpa, arena.allocator(), root_job.scan.id, &.{});
     try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
 
     // the listing is consumed and nothing is queued: first idle
-    try std.testing.expect(engine.nextDirToScan() == null);
+    try std.testing.expect(engine.nextJob(gpa) == null);
     try engine.waitIdle(std.testing.io, zero_wait);
 
     // a rescan after the first completion re-arms the wait
     engine.queueUserScan(.root, false);
-    const rescanned_id = engine.nextDirToScan().?;
+    const rescanned = engine.nextJob(gpa).?;
     try std.testing.expectError(error.Timeout, engine.waitIdle(std.testing.io, zero_wait));
 
-    try engine.applyListing(gpa, arena.allocator(), rescanned_id, &.{});
-    try std.testing.expect(engine.nextDirToScan() == null);
+    try engine.applyListing(gpa, arena.allocator(), rescanned.scan.id, &.{});
+    try std.testing.expect(engine.nextJob(gpa) == null);
     try engine.waitIdle(std.testing.io, zero_wait);
+}
+
+test "queued work under an entry detached by a rescan is skipped" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var engine = try ScanEngine.init(gpa, io, "/base");
+    defer engine.deinit(gpa);
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    const Subdir = struct {
+        fn entry(name: []const u8) DirEntry {
+            return .{ .name = name, .size = 0, .kind = .directory, .can_scan = true };
+        }
+    };
+
+    const root_id = engine.nextJob(gpa).?.scan.id;
+    try engine.applyListing(gpa, arena.allocator(), root_id, &.{ Subdir.entry("a"), Subdir.entry("b") });
+    // drain the first-scan queue of the two leaves
+    while (engine.nextJob(gpa)) |job| {
+        try engine.applyListing(gpa, arena.allocator(), job.scan.id, &.{});
+    }
+
+    var entries = try engine.listDirMerged(gpa, arena.allocator(), .root, &.{ Subdir.entry("a"), Subdir.entry("b") });
+    defer deinitListDir(gpa, &entries);
+    const b_id = for (entries.items) |entry| {
+        if (entry.kind == .directory and std.mem.eql(u8, entry.name, "b")) break entry.id.?;
+    } else return error.MissingDir;
+
+    engine.queueUserScan(.root, false);
+    const rescanned_id = engine.nextJob(gpa).?.scan.id;
+    try engine.applyListing(gpa, arena.allocator(), rescanned_id, &.{Subdir.entry("a")});
+
+    // work queued under the detached b/ must be discarded, not applied:
+    // b's totals were already folded away and a second listing would
+    // adjust the global counters again
+    engine.queueUserScan(b_id, false);
+    try std.testing.expect(engine.nextJob(gpa) == null);
+
+    try engine.requestDelete(gpa, b_id, "gone.bin");
+    try std.testing.expect(engine.nextJob(gpa) == null);
+
+    // counters still reflect exactly one directory (a/)
+    const c = engine.counters();
+    try std.testing.expectEqual(@as(u32, 1), c.dirs);
+    try std.testing.expectEqual(@as(u64, 0), c.scanned_size);
 }
