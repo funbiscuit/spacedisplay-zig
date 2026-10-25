@@ -13,11 +13,11 @@ pub fn formatSize(allocator: Allocator, bytes: u64, width: comptime_int) ![]cons
         fb /= 1024.0;
     }
     if (fb > 999) {
-        return try std.fmt.allocPrint(allocator, ">999 {s}", .{units[unit]});
+        return try allocator.print(">999 {s}", .{units[unit]});
     } else {
         var num_bytes: [16]u8 = undefined;
         const precision: u8 = if (fb > 99) 0 else if (fb > 9) 1 else 2;
-        var num_str = std.fmt.bufPrint(&num_bytes, "{d:.[1]}", .{ fb, precision }) catch unreachable;
+        var num_str = std.mem.print(&num_bytes, "{d:.[1]}", .{ fb, precision }) catch unreachable;
 
         if (precision > 0) {
             while (num_str[num_str.len - 1] == '0') {
@@ -28,7 +28,7 @@ pub fn formatSize(allocator: Allocator, bytes: u64, width: comptime_int) ![]cons
             }
         }
 
-        return try std.fmt.allocPrint(allocator, "{s: >[2]} {s}", .{ num_str, units[unit], width });
+        return try allocator.print("{s: >[2]} {s}", .{ num_str, units[unit], width });
     }
 }
 

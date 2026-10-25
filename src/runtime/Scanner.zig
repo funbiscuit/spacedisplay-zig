@@ -535,10 +535,10 @@ test "Scanner deletes a directory whose contents are symlinks" {
     const base = try tmpPath(std.testing.allocator, &fixture.tmp);
     defer std.testing.allocator.free(base);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const stuck = try std.fmt.bufPrint(&buf, "{s}/a/stuck", .{base});
+    const stuck = try std.mem.print(&buf, "{s}/a/stuck", .{base});
     try Io.Dir.cwd().createDir(std.testing.io, stuck, .default_dir);
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const link = try std.fmt.bufPrint(&link_buf, "{s}/a/stuck/LICENSE", .{base});
+    const link = try std.mem.print(&link_buf, "{s}/a/stuck/LICENSE", .{base});
     const linkz = try std.testing.allocator.dupeSentinel(u8, link, 0);
     defer std.testing.allocator.free(linkz);
     try std.testing.expectEqual(@as(c_int, 0), std.c.symlink("../nowhere", linkz));
@@ -563,7 +563,7 @@ test "delete rounds give up when a directory cannot empty" {
     const base = try tmpPath(std.testing.allocator, &fixture.tmp);
     defer std.testing.allocator.free(base);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const locked = try std.fmt.bufPrint(&buf, "{s}/locked", .{base});
+    const locked = try std.mem.print(&buf, "{s}/locked", .{base});
     const lockedz = try std.testing.allocator.dupeSentinel(u8, locked, 0);
     defer std.testing.allocator.free(lockedz);
     // no write permission: nothing inside can be unlinked

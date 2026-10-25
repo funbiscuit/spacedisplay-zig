@@ -16,7 +16,7 @@ pub fn expectGolden(name: []const u8, rendered: harness.Rendered) !void {
 }
 
 fn expectFile(name: []const u8, ext: []const u8, actual: []const u8) !void {
-    const path = try std.fmt.allocPrint(gpa, "{s}/{s}.{s}", .{ test_options.snapshot_dir, name, ext });
+    const path = try gpa.print("{s}/{s}.{s}", .{ test_options.snapshot_dir, name, ext });
     defer gpa.free(path);
 
     if (std.process.Environ.getPosix(std.testing.environ, "UPDATE_SNAPSHOTS") != null) {

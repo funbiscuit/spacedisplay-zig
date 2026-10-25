@@ -29,7 +29,7 @@ pub fn draw(self: *const ProgressBar, ctx: vxfw.DrawContext) !vxfw.Surface {
 
     var children = std.ArrayList(vxfw.SubSurface).empty;
 
-    const files_text = try std.fmt.allocPrint(ctx.arena, " {d} files ", .{self.stats.total_files});
+    const files_text = try ctx.arena.print(" {d} files ", .{self.stats.total_files});
     const files_widget: vxfw.Text = .{ .text = files_text };
 
     try children.append(ctx.arena, .{

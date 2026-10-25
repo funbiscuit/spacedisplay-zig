@@ -172,7 +172,7 @@ pub fn FilesView(comptime Ctx: type) type {
             req.* = .{ .view = self, .dir = self._opened_dir_id, .name = name };
             errdefer self.freeDeleteRequest(req);
 
-            const question = try std.fmt.allocPrint(self._allocator, "Delete '{s}'?", .{entry.name});
+            const question = try self._allocator.print("Delete '{s}'?", .{entry.name});
             defer self._allocator.free(question);
 
             dialog.show(ctx, "Confirm Deletion", question, req, onDialogResult) catch |err| switch (err) {
@@ -405,8 +405,7 @@ pub fn FilesView(comptime Ctx: type) type {
                 const prefix = if (is_selected) ">" else " ";
 
                 const name_text = try utils.nameToUtf8(ctx.arena, e.name);
-                const entry_text = try std.fmt.allocPrint(
-                    ctx.arena,
+                const entry_text = try ctx.arena.print(
                     " {s} {s}",
                     .{ prefix, name_text },
                 );

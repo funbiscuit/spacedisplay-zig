@@ -96,7 +96,7 @@ test "FilesView scrolls long listings" {
     var name_bufs: [20][8]u8 = undefined;
     var listing: [20]TestCtx.DirEntry = undefined;
     for (0..20) |i| {
-        const name = std.fmt.bufPrint(&name_bufs[i], "dir{d:0>2}", .{i}) catch unreachable;
+        const name = std.mem.print(&name_bufs[i], "dir{d:0>2}", .{i}) catch unreachable;
         listing[i] = .{
             .name = name,
             .size = 0,
@@ -397,7 +397,7 @@ test "FilesView wheel scrolls without moving the selection" {
     var name_bufs: [20][8]u8 = undefined;
     var listing: [20]TestCtx.DirEntry = undefined;
     for (0..20) |i| {
-        const name = std.fmt.bufPrint(&name_bufs[i], "dir{d:0>2}", .{i}) catch unreachable;
+        const name = std.mem.print(&name_bufs[i], "dir{d:0>2}", .{i}) catch unreachable;
         listing[i] = .{
             .name = name,
             .size = 0,

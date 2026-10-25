@@ -561,11 +561,11 @@ pub fn recordDeleteError(self: *ScanEngine, name: []const u8, err: anyerror) voi
     const shown = if (name.len <= name_buf.len - 3)
         name
     else
-        std.fmt.bufPrint(&name_buf, "{s}...", .{name[0 .. name_buf.len - 3]}) catch unreachable;
+        std.mem.print(&name_buf, "{s}...", .{name[0 .. name_buf.len - 3]}) catch unreachable;
 
     self._mutex.lockUncancelable(self._io);
     defer self._mutex.unlock(self._io);
-    const msg = std.fmt.bufPrint(&self._last_error_buf, "Failed to delete '{s}': {s}", .{ shown, @errorName(err) }) catch {
+    const msg = std.mem.print(&self._last_error_buf, "Failed to delete '{s}': {s}", .{ shown, @errorName(err) }) catch {
         // unreachable by construction: the name is capped and error names
         // are far shorter than the remaining space
         self._last_error_len = 0;

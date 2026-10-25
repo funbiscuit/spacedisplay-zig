@@ -13,7 +13,7 @@ test "binary dumps scanned tree with --print" {
     var run = try harness.runBinary(&.{"--print"}, fixture.path);
     defer run.deinit();
 
-    const expected = try std.fmt.allocPrint(gpa,
+    const expected = try gpa.print(
         \\350 B  {s}/
         \\300 B  └── a/
         \\200 B      └── b/
@@ -30,7 +30,7 @@ test "binary respects --max-depth and --min-size" {
     // depth 1: root and a, but not a/b
     var run = try harness.runBinary(&.{ "--print", "--max-depth", "1" }, fixture.path);
     defer run.deinit();
-    const expected = try std.fmt.allocPrint(gpa,
+    const expected = try gpa.print(
         \\350 B  {s}/
         \\300 B  └── a/
         \\

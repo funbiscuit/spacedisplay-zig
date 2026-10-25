@@ -164,7 +164,7 @@ pub fn draw(self: *ConfirmDialog, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Su
     }
 
     // spaces keep the title from touching the border line
-    const title = std.fmt.allocPrint(ctx.arena, " {s} ", .{self._title}) catch return error.OutOfMemory;
+    const title = ctx.arena.print(" {s} ", .{self._title}) catch return error.OutOfMemory;
     writeCenteredOver(surface, ctx, title, 0, title_style);
     writeCentered(surface, ctx, 1, self._question, card);
     writeCentered(surface, ctx, 2, "[Y]es  [N]o  [Esc] cancel", card);

@@ -105,7 +105,7 @@ pub fn AppView(comptime Ctx: type) type {
                 .child = self._files_view.widget(),
                 .labels = &[_]vxfw.Border.BorderLabel{
                     .{
-                        .text = try std.fmt.allocPrint(ctx.arena, " {s} ", .{opened_path}),
+                        .text = try ctx.arena.print(" {s} ", .{opened_path}),
                         .alignment = .top_left,
                     },
                 },
