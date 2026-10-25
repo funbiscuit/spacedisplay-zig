@@ -67,8 +67,16 @@ pub fn build(b: *std.Build) void {
     const e2e_tests = b.addTest(.{ .root_module = tests_mod });
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
-    test_step.dependOn(&b.addRunArtifact(e2e_tests).step);
+    // The emitted binaries run as plain processes, not through
+    // addRunArtifact: its zig 0.17.0 test-server protocol can fail a step
+    // after a clean run with no diagnostics and still exit 0 (caching the
+    // failed run as a success). A plain run checks the standalone
+    // runner's exit code, which already covers test failures, leaks, and
+    // intercepted error logs.
+    const lib_test_run = b.addRunFile(lib_tests.getEmittedBin());
+    const e2e_test_run = b.addRunFile(e2e_tests.getEmittedBin());
+    test_step.dependOn(&lib_test_run.step);
+    test_step.dependOn(&e2e_test_run.step);
 
     const run_step = b.step("run", "Run the app");
 
