@@ -27,20 +27,13 @@ jobs:
           version: 0.17.0
       - run: zig build
 
-  build-release:
+  binaries:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.17.0
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
       - run: mv zig-out/bin/spacedisplay zig-out/bin/spacedisplay_linux_amd64
@@ -51,12 +44,11 @@ jobs:
       - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
       - run: mv zig-out/bin/spacedisplay zig-out/bin/spacedisplay_darwin_arm64
 
-      - name: Upload release binaries
+      - name: Upload binaries
         uses: actions/upload-artifact@v5
         with:
-          name: release-binaries
+          name: spacedisplay-binaries
           path: zig-out/bin
-          retention-days: 1
 
   lint:
     runs-on: ubuntu-latest
@@ -70,15 +62,19 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ test, lint, build-release ]
+    needs: [ test, lint, binaries ]
     permissions:
       contents: write
     steps:
-      - name: Download release binaries
+      - name: Download binaries
         uses: actions/download-artifact@v6
         with:
-          name: release-binaries
+          name: spacedisplay-binaries
           path: artifacts
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Display structure of downloaded files
         working-directory: artifacts
@@ -87,11 +83,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          name: spacedisplay v${{ needs.build-release.outputs.version }}
+          name: spacedisplay v${{ steps.get_version.outputs.version }}
           tag_name: ${{ github.ref_name }}
           body: |
-            Auto-generated release for version ${{ needs.build-release.outputs.version }}
-            
+            Auto-generated release for version ${{ steps.get_version.outputs.version }}
+
             Changes:
             - TODO: Add release notes here
           draft: false
