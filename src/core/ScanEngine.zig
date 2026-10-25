@@ -61,6 +61,14 @@ pub const DirEntry = struct {
     };
 };
 
+/// A directory listing taken from disk: entry names are owned by the
+/// caller's arena. `missing` marks a directory that could not be opened,
+/// as opposed to existing but being empty.
+pub const DirListing = struct {
+    entries: []DirEntry,
+    missing: bool = false,
+};
+
 pub const ListDirEntry = struct {
     id: ?EntryId,
     name: []const u8,

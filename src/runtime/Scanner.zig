@@ -106,7 +106,7 @@ pub fn listDir(self: *Scanner, allocator: Allocator, dir_id: EntryId) !std.Array
     defer arena.deinit();
 
     const dir_path = try self._engine.pathOf(arena.allocator(), dir_id);
-    const listing = try scanSingleDir(self._io, arena.allocator(), dir_path);
+    const listing = try platform.listDir(self._io, arena.allocator(), dir_path);
     if (listing.missing) return error.DirMissing;
     return self._engine.listDirMerged(allocator, arena.allocator(), dir_id, listing.entries);
 }
@@ -160,22 +160,15 @@ fn workerFuncErr(engine: *ScanEngine, allocator: Allocator, io: Io) !void {
     );
 }
 
-const DirListing = struct {
-    entries: []ScanEngine.DirEntry,
-    /// The directory could not be opened: it does not exist (or became
-    /// unreadable), as opposed to existing but being empty.
-    missing: bool = false,
-};
-
 fn runScanJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, scan: ScanEngine.ScanJob) !void {
     const dir_path = try engine.pathOf(arena, scan.id);
-    const listing = try scanSingleDir(io, arena, dir_path);
+    const listing = try platform.listDir(io, arena, dir_path);
     try engine.applyListing(allocator, arena, scan.id, listing.entries);
 }
 
 fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, dir: ScanEngine.DirJob) !void {
     const dir_path = try engine.pathOf(arena, dir.id);
-    const listing = try scanSingleDir(io, arena, dir_path);
+    const listing = try platform.listDir(io, arena, dir_path);
 
     var remaining: std.ArrayList(ScanEngine.DirEntry) = .empty;
     var deleted_any = false;
@@ -215,7 +208,7 @@ fn runDeleteDirJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: All
 /// Unlinks the file, then syncs the parent's tree from a fresh listing.
 fn runDeleteFileJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Allocator, file: ScanEngine.FileJob) !void {
     const parent_path = try engine.pathOf(arena, file.parent);
-    const listing = try scanSingleDir(io, arena, parent_path);
+    const listing = try platform.listDir(io, arena, parent_path);
 
     var remaining: std.ArrayList(ScanEngine.DirEntry) = .empty;
     var found = false;
@@ -238,58 +231,6 @@ fn runDeleteFileJob(engine: *ScanEngine, allocator: Allocator, io: Io, arena: Al
     if (!found) engine.recordDeleteError(file.name, error.FileNotFound);
 
     try engine.applyListing(allocator, arena, file.parent, remaining.items);
-}
-
-fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) !DirListing {
-    var entries = std.ArrayList(ScanEngine.DirEntry).empty;
-    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.warn("Failed to open `{s}`: {any}", .{ dir_path, err });
-        return .{ .entries = entries.items, .missing = true };
-    };
-    defer dir.close(io);
-
-    var it = dir.iterateAssumeFirstIteration();
-    while (true) {
-        const entry = it.next(io) catch |err| {
-            std.log.warn("Failed to iterate in `{s}`: {any}", .{ dir_path, err });
-            break;
-        } orelse break;
-        const name = try arena.dupe(u8, entry.name);
-        switch (entry.kind) {
-            .directory => {
-                const can_scan = try platform.canScan(io, arena, dir_path, name);
-                try entries.append(arena, .{
-                    .name = name,
-                    .size = 0,
-                    .kind = .directory,
-                    .can_scan = can_scan,
-                });
-            },
-            .file => {
-                const stats = dir.statFile(io, entry.name, .{}) catch |err| {
-                    std.log.warn("Failed to stat file `{s}/{s}`: {any}", .{ dir_path, entry.name, err });
-                    continue;
-                };
-                try entries.append(arena, .{
-                    .name = name,
-                    .size = stats.size,
-                    .kind = .file,
-                });
-            },
-            // no stat: it would follow the link, and the link itself is
-            // what deletions act on
-            .sym_link => {
-                try entries.append(arena, .{
-                    .name = name,
-                    .size = 0,
-                    .kind = .sym_link,
-                });
-            },
-            else => {},
-        }
-    }
-
-    return .{ .entries = entries.items };
 }
 
 fn writeFixtureFile(dir: Io.Dir, sub_path: []const u8, size: usize) !void {

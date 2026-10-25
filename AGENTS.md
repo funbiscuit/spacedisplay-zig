@@ -21,7 +21,7 @@ src/
   lib.zig         library root re-exporting the public API (owns the third-party imports)
   cli.zig         argument parsing, app startup
   logging.zig     stderr logging with allow_log kill switch
-  platform.zig    mount stats / can-scan queries / deletion (statvfs, statx)
+  platform.zig    directory listing / mount stats / deletion (per-OS backends in platform/)
   core.zig        namespace for the pure logic and data in core/
   core/           pure logic and data (no vaxis, threads, or filesystem)
   runtime.zig     namespace for the drivers in runtime/
