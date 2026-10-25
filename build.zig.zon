@@ -2,15 +2,15 @@
     .name = .spacedisplay,
     .version = "0.1.4-SNAPSHOT",
     .fingerprint = 0x845e16b5af741137, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .clap = .{
-            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.12.0.tar.gz",
-            .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
+            .url = "git+https://github.com/Hejsil/zig-clap.git#05faf3905e8548f5cc269a8836e154065e70128d",
+            .hash = "clap-0.12.0-oBajB4XpAQCF1WRKnD5KOKPsnwwT_NNdAJ7Ww3irYJac",
         },
         .vaxis = .{
-            .url = "git+https://github.com/rockorager/libvaxis.git#173a890d1394946b5d7623c66cd34bcd36d8eeb8",
-            .hash = "vaxis-0.6.0-BWNV_OybDABnzf12gCPzy_IgAjkKkonDJF-2O_7XyLtD",
+            .url = "git+https://github.com/rockorager/libvaxis.git#bb94364ce00a59044322d3d403d08e83d841d9d4",
+            .hash = "vaxis-0.6.0-BWNV_IoaDQDXEsN4nhfsjQlgU3EfkQqJqTGkAW-vjAi0",
         },
     },
     .paths = .{

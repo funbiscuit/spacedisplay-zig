@@ -20,7 +20,7 @@ test {
 }
 
 pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
-    const parent_pathz = try allocator.dupeZ(u8, parent_path);
+    const parent_pathz = try allocator.dupeSentinel(u8, parent_path, 0);
     defer allocator.free(parent_pathz);
 
     const child_path = std.fs.path.resolve(
@@ -29,7 +29,7 @@ pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8)
     ) catch return false;
     defer allocator.free(child_path);
 
-    const child_pathz = try allocator.dupeZ(u8, child_path);
+    const child_pathz = try allocator.dupeSentinel(u8, child_path, 0);
     defer allocator.free(child_pathz);
 
     if (devOf(child_pathz)) |child_dev| {
@@ -43,7 +43,7 @@ pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8)
 pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?MountStats {
     const abs_path = realpathAlloc(allocator, path) orelse return null;
     defer allocator.free(abs_path);
-    const abs_pathz = try allocator.dupeZ(u8, abs_path);
+    const abs_pathz = try allocator.dupeSentinel(u8, abs_path, 0);
     defer allocator.free(abs_pathz);
 
     var res: posix.struct_statvfs = std.mem.zeroes(posix.struct_statvfs);
@@ -55,7 +55,7 @@ pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?Mo
     const maybe_parent_abs_path = std.fs.path.dirname(abs_path);
     const is_mount_point = if (maybe_parent_abs_path) |parent_abs_path| blk: {
         if (devOf(abs_pathz)) |dev1| {
-            const parent_pathz = try allocator.dupeZ(u8, parent_abs_path);
+            const parent_pathz = try allocator.dupeSentinel(u8, parent_abs_path, 0);
             defer allocator.free(parent_pathz);
             if (devOf(parent_pathz)) |dev2| {
                 break :blk dev1 != dev2;
@@ -80,7 +80,7 @@ pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?Mo
 /// Resolves `path` against symlinks; null when it does not exist. The result
 /// is owned by `allocator`.
 fn realpathAlloc(allocator: Allocator, path: []const u8) ?[]u8 {
-    const pathz = allocator.dupeZ(u8, path) catch return null;
+    const pathz = allocator.dupeSentinel(u8, path, 0) catch return null;
     defer allocator.free(pathz);
 
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;

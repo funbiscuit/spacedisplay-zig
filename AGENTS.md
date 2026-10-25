@@ -2,7 +2,7 @@
 
 ## Toolchain
 
-**Zig is pinned to 0.16.x**
+**Zig is pinned to 0.17.x**
 
 ## Commands
 

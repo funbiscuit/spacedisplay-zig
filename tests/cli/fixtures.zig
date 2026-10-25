@@ -40,7 +40,7 @@ fn writeFile(dir: std.Io.Dir, sub_path: []const u8, size: usize) !void {
     if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
     var f = try dir.createFile(io, sub_path, .{});
     defer f.close(io);
-    var buf = [_]u8{0} ** 4096;
+    var buf: [4096]u8 = @splat(0);
     var left = size;
     while (left > 0) {
         const n = @min(left, buf.len);

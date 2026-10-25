@@ -296,7 +296,7 @@ fn writeFixtureFile(dir: Io.Dir, sub_path: []const u8, size: usize) !void {
     if (std.fs.path.dirname(sub_path)) |parent| try dir.createDirPath(io, parent);
     var f = try dir.createFile(io, sub_path, .{});
     defer f.close(io);
-    var buf = [_]u8{0} ** 4096;
+    var buf: [4096]u8 = @splat(0);
     var left = size;
     while (left > 0) {
         const n = @min(left, buf.len);
@@ -539,7 +539,7 @@ test "Scanner deletes a directory whose contents are symlinks" {
     try Io.Dir.cwd().createDir(std.testing.io, stuck, .default_dir);
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link = try std.fmt.bufPrint(&link_buf, "{s}/a/stuck/LICENSE", .{base});
-    const linkz = try std.testing.allocator.dupeZ(u8, link);
+    const linkz = try std.testing.allocator.dupeSentinel(u8, link, 0);
     defer std.testing.allocator.free(linkz);
     try std.testing.expectEqual(@as(c_int, 0), std.c.symlink("../nowhere", linkz));
 
@@ -564,7 +564,7 @@ test "delete rounds give up when a directory cannot empty" {
     defer std.testing.allocator.free(base);
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const locked = try std.fmt.bufPrint(&buf, "{s}/locked", .{base});
-    const lockedz = try std.testing.allocator.dupeZ(u8, locked);
+    const lockedz = try std.testing.allocator.dupeSentinel(u8, locked, 0);
     defer std.testing.allocator.free(lockedz);
     // no write permission: nothing inside can be unlinked
     try std.testing.expectEqual(@as(c_int, 0), std.c.chmod(lockedz, 0o555));
