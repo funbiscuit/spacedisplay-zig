@@ -66,15 +66,36 @@ jobs:
     permissions:
       contents: write
     steps:
+      # full history: the previous-tag lookup walks the tag list
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Get previous tag
+        id: prev_tag
+        run: |
+          prev=$(git tag --sort=-creatordate | grep -m1 -A1 "^${GITHUB_REF_NAME}$" | tail -n1)
+          if [ "$prev" = "$GITHUB_REF_NAME" ]; then prev=""; fi
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+
+      - name: Compose changelog link
+        id: changelog
+        run: |
+          if [ -n "${{ steps.prev_tag.outputs.prev }}" ]; then
+            echo "link=**Full Changelog**: https://github.com/funbiscuit/spacedisplay-zig/compare/${{ steps.prev_tag.outputs.prev }}...${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "link=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download binaries
         uses: actions/download-artifact@v6
         with:
           name: spacedisplay-binaries
           path: artifacts
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Display structure of downloaded files
         working-directory: artifacts
@@ -86,10 +107,19 @@ jobs:
           name: spacedisplay v${{ steps.get_version.outputs.version }}
           tag_name: ${{ github.ref_name }}
           body: |
-            Auto-generated release for version ${{ steps.get_version.outputs.version }}
+            ## Features
 
-            Changes:
-            - TODO: Add release notes here
+            * TODO
+
+            ## Fixes
+
+            * TODO
+
+            ## Internal
+
+            * TODO
+
+            ${{ steps.changelog.outputs.link }}
           draft: false
           prerelease: true
           files: |
