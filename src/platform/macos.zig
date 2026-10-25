@@ -9,18 +9,18 @@ pub const Space = struct { total: u64, available: u64, reserved: u64 };
 
 extern fn stat(path: [*:0]const u8, buf: *std.posix.Stat) c_int;
 
-/// Darwin's struct statvfs (sys/statvfs.h, verified against the SDK
-/// headers zig bundles): unsigned long block sizes, uint64 counters, and
-/// none of the name arrays statfs carries.
+/// Darwin's struct statvfs (sys/statvfs.h): unsigned long sizes, but the
+/// block/inode counters are 32-bit (__darwin_fsblkcnt_t = unsigned int —
+/// verified against the SDK headers zig bundles).
 const struct_statvfs = extern struct {
     f_bsize: c_ulong,
     f_frsize: c_ulong,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_favail: u64,
+    f_blocks: u32,
+    f_bfree: u32,
+    f_bavail: u32,
+    f_files: u32,
+    f_ffree: u32,
+    f_favail: u32,
     f_fsid: c_ulong,
     f_flag: c_ulong,
     f_namemax: c_ulong,

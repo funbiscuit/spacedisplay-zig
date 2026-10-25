@@ -439,7 +439,12 @@ pub fn FilesView(comptime Ctx: type) type {
                     });
 
                     //TODO extract to separate widget
-                    const bar_width = @as(f64, @floatFromInt(e.size * max_bar_width)) / max_entry_size;
+                    // an all-zero listing would make the share 0/0 = NaN,
+                    // and @intFromFloat(NaN) is arch-dependent UB
+                    const bar_width: f64 = if (max_entry_size > 0)
+                        @as(f64, @floatFromInt(e.size * max_bar_width)) / max_entry_size
+                    else
+                        0;
                     const bar_surface = try vxfw.Surface.init(
                         ctx.arena,
                         self.widget(),
