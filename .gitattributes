@@ -1,0 +1,2 @@
+# golden snapshots are compared byte-exact by the tests
+tests/snapshots/** -text
