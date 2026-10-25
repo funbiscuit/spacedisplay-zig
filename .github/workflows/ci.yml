@@ -6,7 +6,10 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
@@ -40,6 +43,12 @@ jobs:
 
       - run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
       - run: mv zig-out/bin/spacedisplay zig-out/bin/spacedisplay_linux_amd64
+      - run: zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe
+      - run: mv zig-out/bin/spacedisplay.exe zig-out/bin/spacedisplay_windows_amd64.exe
+      - run: zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
+      - run: mv zig-out/bin/spacedisplay zig-out/bin/spacedisplay_darwin_amd64
+      - run: zig build -Dtarget=aarch64-macos -Doptimize=ReleaseSafe
+      - run: mv zig-out/bin/spacedisplay zig-out/bin/spacedisplay_darwin_arm64
 
       - name: Upload release binaries
         uses: actions/upload-artifact@v5
@@ -88,3 +97,6 @@ jobs:
           prerelease: true
           files: |
             artifacts/spacedisplay_linux_amd64
+            artifacts/spacedisplay_windows_amd64.exe
+            artifacts/spacedisplay_darwin_amd64
+            artifacts/spacedisplay_darwin_arm64
