@@ -2,6 +2,7 @@
 //! filesystem access.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const platform = @import("../platform.zig");
 const ScanEngine = @import("../core/ScanEngine.zig");
 
@@ -37,7 +38,7 @@ pub fn deinit(self: *Scanner, allocator: Allocator) void {
 }
 
 pub fn getStats(self: *Scanner, allocator: Allocator, dir_id: EntryId) !ScanStats {
-    const mount = try platform.getMountStats(allocator, self._engine.scannedPath());
+    const mount = try platform.getMountStats(self._io, allocator, self._engine.scannedPath());
     return self._engine.getStats(dir_id, mount);
 }
 
@@ -256,7 +257,7 @@ fn scanSingleDir(io: Io, arena: Allocator, dir_path: []const u8) !DirListing {
         const name = try arena.dupe(u8, entry.name);
         switch (entry.kind) {
             .directory => {
-                const can_scan = try platform.canScan(arena, dir_path, name);
+                const can_scan = try platform.canScan(io, arena, dir_path, name);
                 try entries.append(arena, .{
                     .name = name,
                     .size = 0,
@@ -528,6 +529,8 @@ test "Scanner records a failure when a delete misses" {
 }
 
 test "Scanner deletes a directory whose contents are symlinks" {
+    // creating a symlink needs developer mode on windows
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
     try fixture.scanner.waitIdle(10_000);
@@ -539,9 +542,7 @@ test "Scanner deletes a directory whose contents are symlinks" {
     try Io.Dir.cwd().createDir(std.testing.io, stuck, .default_dir);
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     const link = try std.mem.print(&link_buf, "{s}/a/stuck/LICENSE", .{base});
-    const linkz = try std.testing.allocator.dupeSentinel(u8, link, 0);
-    defer std.testing.allocator.free(linkz);
-    try std.testing.expectEqual(@as(c_int, 0), std.c.symlink("../nowhere", linkz));
+    try Io.Dir.cwd().symLink(std.testing.io, "../nowhere", link, .{});
 
     try fixture.scanner.requestDelete(std.testing.allocator, .root, "a");
     // converges instead of cycling
@@ -553,8 +554,10 @@ test "Scanner deletes a directory whose contents are symlinks" {
 }
 
 test "delete rounds give up when a directory cannot empty" {
+    // windows has no directory permission bits
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     // root ignores directory permissions, so the lock would not hold
-    if (std.os.linux.getuid() == 0) return error.SkipZigTest;
+    if (std.c.getuid() == 0) return error.SkipZigTest;
     var fixture = try Fixture.create();
     defer fixture.destroy() catch {};
     try fixture.scanner.waitIdle(10_000);

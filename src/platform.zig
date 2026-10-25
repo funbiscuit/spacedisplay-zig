@@ -1,112 +1,80 @@
+//! Mount stats, mount-boundary checks, and deletion; per-OS backends in
+//! platform/, portable shared logic here.
+
 const std = @import("std");
-const c = std.c;
-const linux = std.os.linux;
-const posix = @import("platform/posix.zig");
+const builtin = @import("builtin");
+const delete = @import("platform/delete.zig");
 const ScanEngine = @import("core/ScanEngine.zig");
 
+const backend = switch (builtin.os.tag) {
+    .linux => @import("platform/linux.zig"),
+    .macos => @import("platform/macos.zig"),
+    .windows => @import("platform/windows.zig"),
+    else => @compileError("unsupported operating system"),
+};
+
 const Allocator = std.mem.Allocator;
+const Io = std.Io;
 
 pub const MountStats = ScanEngine.MountStats;
 
 /// Deletes whatever `sub_path` turns out to be on disk: a file, a symlink
 /// (removed, never followed), or an empty directory. Non empty directories
 /// are not removed and `DirNotEmpty` error is returned.
-pub fn deletePath(dir: std.Io.Dir, io: std.Io, sub_path: []const u8) !void {
-    return posix.deletePath(dir, io, sub_path);
+pub fn deletePath(dir: Io.Dir, io: Io, sub_path: []const u8) !void {
+    return delete.deletePath(dir, io, sub_path);
 }
 
 test {
     std.testing.refAllDecls(@This());
 }
 
-pub fn canScan(allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
-    const parent_pathz = try allocator.dupeSentinel(u8, parent_path, 0);
-    defer allocator.free(parent_pathz);
-
+pub fn canScan(io: Io, allocator: Allocator, parent_path: []const u8, child: []const u8) !bool {
     const child_path = std.fs.path.resolve(
         allocator,
         &[_][]const u8{ parent_path, child },
     ) catch return false;
     defer allocator.free(child_path);
 
-    const child_pathz = try allocator.dupeSentinel(u8, child_path, 0);
-    defer allocator.free(child_pathz);
-
-    if (devOf(child_pathz)) |child_dev| {
-        if (devOf(parent_pathz)) |parent_dev| {
+    if (backend.devOf(io, allocator, child_path)) |child_dev| {
+        if (backend.devOf(io, allocator, parent_path)) |parent_dev| {
             return child_dev == parent_dev;
         }
     }
     return false;
 }
 
-pub fn getMountStats(allocator: Allocator, path: []const u8) Allocator.Error!?MountStats {
-    const abs_path = realpathAlloc(allocator, path) orelse return null;
+pub fn getMountStats(io: Io, allocator: Allocator, path: []const u8) Allocator.Error!?MountStats {
+    const abs_path = realpathAlloc(io, allocator, path) orelse return null;
     defer allocator.free(abs_path);
-    const abs_pathz = try allocator.dupeSentinel(u8, abs_path, 0);
-    defer allocator.free(abs_pathz);
-
-    var res: posix.struct_statvfs = std.mem.zeroes(posix.struct_statvfs);
-    const errno = posix.statvfs(abs_pathz, &res);
-    if (errno != 0) {
-        return null;
-    }
+    const space = backend.spaceOf(io, allocator, abs_path) orelse return null;
 
     const maybe_parent_abs_path = std.fs.path.dirname(abs_path);
     const is_mount_point = if (maybe_parent_abs_path) |parent_abs_path| blk: {
-        if (devOf(abs_pathz)) |dev1| {
-            const parent_pathz = try allocator.dupeSentinel(u8, parent_abs_path, 0);
-            defer allocator.free(parent_pathz);
-            if (devOf(parent_pathz)) |dev2| {
+        if (backend.devOf(io, allocator, abs_path)) |dev1| {
+            if (backend.devOf(io, allocator, parent_abs_path)) |dev2| {
                 break :blk dev1 != dev2;
             }
         }
         break :blk false;
     } else true;
 
-    const block_size: u64 = if (res.f_frsize > 0) @intCast(res.f_frsize) else @intCast(res.f_bsize);
-    const total_blocks: u64 = @intCast(res.f_blocks);
-    const available_blocks_for_root: u64 = @intCast(res.f_bfree);
-    const available_blocks: u64 = @intCast(res.f_bavail);
-
     return .{
-        .total = total_blocks * block_size,
-        .available = available_blocks * block_size,
-        .reserved = (available_blocks_for_root - available_blocks) * block_size,
+        .total = space.total,
+        .available = space.available,
+        .reserved = space.reserved,
         .is_mount_point = is_mount_point,
     };
 }
 
 /// Resolves `path` against symlinks; null when it does not exist. The result
 /// is owned by `allocator`.
-fn realpathAlloc(allocator: Allocator, path: []const u8) ?[]u8 {
-    const pathz = allocator.dupeSentinel(u8, path, 0) catch return null;
-    defer allocator.free(pathz);
-
-    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const resolved = c.realpath(pathz, &buf) orelse return null;
-    return allocator.dupe(u8, std.mem.span(resolved)) catch null;
-}
-
-/// Device id of the filesystem holding `path`; null when it does not exist.
-/// std.Io.File.Stat carries no device id, so this goes through statx(2).
-fn devOf(path: [:0]const u8) ?u64 {
-    var stx: linux.Statx = std.mem.zeroes(linux.Statx);
-    const rc = c.statx(std.posix.AT.FDCWD, path, 0, .{
-        .TYPE = true,
-        .MODE = true,
-        .NLINK = true,
-        .UID = true,
-        .GID = true,
-        .ATIME = true,
-        .MTIME = true,
-        .CTIME = true,
-        .INO = true,
-        .SIZE = true,
-        .BLOCKS = true,
-    }, &stx);
-    if (rc != 0) {
-        return null;
-    }
-    return (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
+fn realpathAlloc(io: Io, allocator: Allocator, path: []const u8) ?[]u8 {
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const n = Io.Dir.cwd().realPathFile(io, path, &buf) catch return null;
+    var resolved = buf[0..n];
+    // Windows canonical paths carry a \\?\ prefix that no user wants to
+    // see; everything accepts the plain drive-letter form.
+    if (std.mem.startsWith(u8, resolved, "\\\\?\\")) resolved = resolved[4..];
+    return allocator.dupe(u8, resolved) catch return null;
 }

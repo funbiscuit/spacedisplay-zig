@@ -19,7 +19,7 @@ fn expectFile(name: []const u8, ext: []const u8, actual: []const u8) !void {
     const path = try gpa.print("{s}/{s}.{s}", .{ test_options.snapshot_dir, name, ext });
     defer gpa.free(path);
 
-    if (std.process.Environ.getPosix(std.testing.environ, "UPDATE_SNAPSHOTS") != null) {
+    if (try std.process.Environ.contains(std.testing.environ, gpa, "UPDATE_SNAPSHOTS")) {
         if (std.fs.path.dirname(path)) |dir| std.Io.Dir.cwd().createDirPath(io, dir) catch {};
         const file = try std.Io.Dir.cwd().createFile(io, path, .{});
         defer file.close(io);
