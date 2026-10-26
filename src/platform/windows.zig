@@ -53,7 +53,10 @@ pub fn listDir(io: Io, arena: Allocator, dir_path: []const u8) Allocator.Error!S
         const records: []align(@alignOf(win32.FILE_BOTH_DIR_INFORMATION)) u8 = buf[0..iosb.Information];
         var it = win32.FileInformationIterator(win32.FILE_BOTH_DIR_INFORMATION){ .buf = records };
         while (it.next()) |info| {
-            const name_w = info.FileName[0 .. info.FileNameLength / 2];
+            // FileName is a C flexible array: the name runs past its
+            // declared [1] length, so the length-checked slice goes
+            // through a pointer to escape array bounds checks.
+            const name_w = @as([*]const u16, @ptrCast(&info.FileName))[0 .. info.FileNameLength / 2];
             if (std.mem.eql(u16, name_w, &[_]u16{'.'}) or std.mem.eql(u16, name_w, &[_]u16{ '.', '.' })) {
                 continue;
             }
